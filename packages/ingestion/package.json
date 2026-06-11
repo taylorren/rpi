@@ -1,23 +1,20 @@
 {
-  "name": "@rpi/api",
+  "name": "@rpi/ingestion",
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
-    "dev": "tsx watch src/server.ts",
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@fastify/cors": "^9.0.1",
-    "@rpi/ingestion": "workspace:*",
-    "@rpi/scoring": "workspace:*",
     "@rpi/shared": "workspace:*",
-    "fastify": "^4.28.0"
+    "rss-parser": "^3.13.0"
   },
   "devDependencies": {
-    "@types/node": "^25.9.2",
-    "tsx": "^4.16.0",
     "typescript": "^5.5.0"
   }
 }

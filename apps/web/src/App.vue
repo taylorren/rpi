@@ -1,6 +1,29 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, onMounted } from "vue";
 import { events, history, snapshot } from "./mockData";
+
+interface Article {
+  publisher: string;
+  headline: string;
+  url: string;
+  publishedAt: string;
+  excerpt: string;
+}
+
+const liveArticles = ref<Article[]>([]);
+const loading = ref(true);
+
+onMounted(async () => {
+  try {
+    const res = await fetch("http://127.0.0.1:3000/api/articles");
+    const data = await res.json();
+    liveArticles.value = data.articles ?? [];
+  } catch {
+    liveArticles.value = [];
+  } finally {
+    loading.value = false;
+  }
+});
 
 const positiveEvents = computed(() =>
   events.filter((event) => event.currentImpact > 0).sort((a, b) => b.currentImpact - a.currentImpact)
@@ -87,6 +110,20 @@ function formatChange(value: number): string {
           <strong>{{ event.currentImpact.toFixed(2) }}</strong>
         </article>
       </div>
+    </section>
+
+    <section class="news-feed">
+      <h2>Live Headlines</h2>
+      <p v-if="loading" class="loading-text">Fetching news...</p>
+      <p v-else-if="liveArticles.length === 0" class="loading-text">No articles available.</p>
+      <article v-for="article in liveArticles" :key="article.url" class="news-item">
+        <div class="news-meta">
+          <span class="news-publisher">{{ article.publisher }}</span>
+          <time>{{ article.publishedAt }}</time>
+        </div>
+        <h3><a :href="article.url" target="_blank" rel="noopener">{{ article.headline }}</a></h3>
+        <p v-if="article.excerpt">{{ article.excerpt }}</p>
+      </article>
     </section>
 
     <section class="timeline">
