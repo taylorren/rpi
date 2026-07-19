@@ -1,5 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import { db, desc, rpiSnapshots } from "@rpi/db";
 import { fetchAllSources, type FetchedArticle } from "@rpi/ingestion";
 import { calculateCurrentImpact, createEventScore } from "@rpi/scoring";
 import { assessWithOllama, type OllamaAssessment } from "./ollamaScoring.js";
@@ -15,7 +15,7 @@ const BASELINE_RPI = 1000;
 const CACHE_TTL_MS = 5 * 60_000;
 const MAX_HISTORY_POINTS = 500;
 const MAX_ARTICLES_PER_RUN = 40;
-const STATE_PATH = resolve(process.env.RPI_STATE_PATH ?? "./data/rpi-state.json");
+const CALCULATION_VERSION = "rpi-calc-v1";
 
 interface LiveRpiData {
   events: ScoredEvent[];
@@ -23,12 +23,6 @@ interface LiveRpiData {
   snapshot: RpiSnapshot;
   history: RpiHistoryPoint[];
   refreshedAt: string;
-}
-
-interface PersistedRpiState {
-  currentRpi: number;
-  eventImpacts: Record<string, number>;
-  history: RpiHistoryPoint[];
 }
 
 let cached: LiveRpiData | undefined;
@@ -197,18 +191,26 @@ async function createSnapshot(
   events: ScoredEvent[],
   at: Date
 ): Promise<{ snapshot: RpiSnapshot; history: RpiHistoryPoint[] }> {
-  const state = await loadState();
+  const previous = await db
+    .select()
+    .from(rpiSnapshots)
+    .orderBy(desc(rpiSnapshots.snapshotAt))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+
   const impacts = events.map((event) => event.currentImpact);
   const positiveImpactSum = impacts.filter((impact) => impact > 0).reduce((sum, impact) => sum + impact, 0);
   const negativeImpactSum = impacts.filter((impact) => impact < 0).reduce((sum, impact) => sum + impact, 0);
-  const eventImpacts = Object.fromEntries(events.map((event) => [event.id, event.currentImpact]));
   const currentPressure = positiveImpactSum + negativeImpactSum;
-  const previousPressure = Object.values(state?.eventImpacts ?? {}).reduce((sum, impact) => sum + impact, 0);
-  const isFirstSnapshot = !state;
+  const previousPressure = previous
+    ? previous.positiveImpactSum + previous.negativeImpactSum
+    : 0;
+  const isFirstSnapshot = !previous;
   const changeSincePrevious = isFirstSnapshot ? 0 : currentPressure - previousPressure;
   const currentRpi = isFirstSnapshot
     ? BASELINE_RPI + currentPressure
-    : state.currentRpi + changeSincePrevious;
+    : previous.currentRpi + changeSincePrevious;
+
   const snapshot: RpiSnapshot = {
     scope: "global",
     currentRpi: round(currentRpi),
@@ -218,39 +220,32 @@ async function createSnapshot(
     positiveImpactSum: round(positiveImpactSum),
     negativeImpactSum: round(negativeImpactSum)
   };
-  const history = [...(state?.history ?? []), {
+
+  await db.insert(rpiSnapshots).values({
+    id: randomUUID(),
     snapshotAt: snapshot.snapshotAt,
+    indexScope: "global",
+    baselineRpi: BASELINE_RPI,
     currentRpi: snapshot.currentRpi,
-    changeSincePrevious: snapshot.changeSincePrevious
-  }].slice(-MAX_HISTORY_POINTS);
+    changeSincePrevious: snapshot.changeSincePrevious,
+    positiveImpactSum: snapshot.positiveImpactSum,
+    negativeImpactSum: snapshot.negativeImpactSum,
+    activeEventCount: snapshot.activeEventCount,
+    calculationVersion: CALCULATION_VERSION
+  });
 
-  await saveState({ currentRpi: snapshot.currentRpi, eventImpacts, history });
+  const historyRows = await db
+    .select({
+      snapshotAt: rpiSnapshots.snapshotAt,
+      currentRpi: rpiSnapshots.currentRpi,
+      changeSincePrevious: rpiSnapshots.changeSincePrevious
+    })
+    .from(rpiSnapshots)
+    .orderBy(rpiSnapshots.snapshotAt);
+
+  const history = historyRows.slice(-MAX_HISTORY_POINTS);
+
   return { snapshot, history };
-}
-
-async function loadState(): Promise<PersistedRpiState | undefined> {
-  try {
-    const raw = await readFile(STATE_PATH, "utf8");
-    const state = JSON.parse(raw) as PersistedRpiState;
-    if (!Number.isFinite(state.currentRpi) || !state.eventImpacts || !Array.isArray(state.history)) {
-      throw new Error("Invalid RPI state.");
-    }
-    return state;
-  } catch (error) {
-    if (isMissingFile(error)) return undefined;
-    throw error;
-  }
-}
-
-async function saveState(state: PersistedRpiState): Promise<void> {
-  await mkdir(dirname(STATE_PATH), { recursive: true });
-  const temporaryPath = `${STATE_PATH}.tmp`;
-  await writeFile(temporaryPath, JSON.stringify(state, null, 2));
-  await rename(temporaryPath, STATE_PATH);
-}
-
-function isMissingFile(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
 function countMatches(text: string, terms: string[]): number {

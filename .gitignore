@@ -29,6 +29,15 @@ coverage/
 *.bak
 *.swp
 
+# Database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Runtime state
+apps/api/data/rpi-state.json
+
 # OS files
 .DS_Store
 Thumbs.db

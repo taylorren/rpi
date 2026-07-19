@@ -11,4 +11,7 @@ if [ -f .env ]; then
   set +a
 fi
 
+# Push DB schema so SQLite tables exist before the API starts.
+pnpm db:push
+
 exec pnpm dev

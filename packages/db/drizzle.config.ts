@@ -5,6 +5,6 @@ export default defineConfig({
   out: "./drizzle",
   dialect: "sqlite",
   dbCredentials: {
-    url: process.env.RPI_DB_PATH ?? "./rpi.db",
+    url: process.env.RPI_DB_PATH ?? "../../rpi.db",
   },
 });
