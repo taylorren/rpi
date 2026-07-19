@@ -42,3 +42,11 @@ Thumbs.db
 
 # Misc
 .idea/
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+
+# Runtime RPI snapshots
+apps/api/data/

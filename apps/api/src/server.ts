@@ -1,7 +1,7 @@
 import cors from "@fastify/cors";
 import Fastify from "fastify";
 import { DEFAULT_SOURCES, fetchAllSources, fetchSource } from "@rpi/ingestion";
-import { getMockEvents, getMockSnapshot, mockHistory } from "./mockData.js";
+import { getCachedLiveRpiData, getLiveRpiData } from "./liveData.js";
 
 const server = Fastify({
   logger: true
@@ -11,20 +11,30 @@ await server.register(cors, {
   origin: true
 });
 
-server.get("/api/rpi/current", async () => getMockSnapshot());
+const startupRefresh = getLiveRpiData(true);
+
+async function getCurrentLiveData() {
+  await startupRefresh;
+  const data = getCachedLiveRpiData();
+  if (!data) throw new Error("RPI data is not ready.");
+  return data;
+}
+
+server.get("/api/rpi/current", async () => (await getCurrentLiveData()).snapshot);
 
 server.get("/api/rpi/history", async () => ({
   scope: "global",
-  points: mockHistory
+  points: (await getCurrentLiveData()).history,
+  methodology: "Persisted index snapshots. The first snapshot starts from the 1000 baseline; each later value applies the change in active event pressure to the previous snapshot."
 }));
 
 server.get("/api/events", async () => ({
-  events: getMockEvents(),
+  events: (await getCurrentLiveData()).events,
   nextCursor: null
 }));
 
 server.get<{ Params: { eventId: string } }>("/api/events/:eventId", async (request, reply) => {
-  const event = getMockEvents().find((item) => item.id === request.params.eventId);
+  const event = (await getCurrentLiveData()).events.find((item) => item.id === request.params.eventId);
 
   if (!event) {
     return reply.code(404).send({
@@ -39,7 +49,7 @@ server.get<{ Params: { eventId: string } }>("/api/events/:eventId", async (reque
 });
 
 server.get("/api/events/top-movers", async () => {
-  const events = getMockEvents();
+  const events = (await getCurrentLiveData()).events;
 
   return {
     positive: events
@@ -54,13 +64,11 @@ server.get("/api/events/top-movers", async () => {
 });
 
 server.get("/api/articles", async () => {
-  const allResults = await fetchAllSources();
-  const articles = Array.from(allResults.values())
-    .flat()
-    .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+  const { articles, refreshedAt } = await getCurrentLiveData();
 
   return {
     count: articles.length,
+    refreshedAt,
     articles: articles.map((a) => ({
       publisher: a.source.name,
       headline: a.headline,
@@ -69,6 +77,11 @@ server.get("/api/articles", async () => {
       excerpt: a.excerpt
     }))
   };
+});
+
+server.post("/api/refresh", async () => {
+  const data = await getLiveRpiData(true);
+  return { refreshedAt: data.refreshedAt, articleCount: data.articles.length, eventCount: data.events.length };
 });
 
 server.get("/api/sources", async () => ({
@@ -129,3 +142,7 @@ server.get("/api/ingestion/fetch", async (request, reply) => {
 
 const port = Number(process.env.PORT ?? 3000);
 await server.listen({ port, host: "127.0.0.1" });
+
+setInterval(() => {
+  void getLiveRpiData(true).catch((error) => server.log.error(error, "Scheduled RPI refresh failed"));
+}, 30 * 60_000).unref();

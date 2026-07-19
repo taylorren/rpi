@@ -1,54 +1,149 @@
 <script setup lang="ts">
-import { computed, ref, onMounted } from "vue";
-import { events, history, snapshot } from "./mockData";
+import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
+import * as echarts from "echarts";
 
-interface Article {
-  publisher: string;
-  headline: string;
-  url: string;
-  publishedAt: string;
-  excerpt: string;
+interface EventItem {
+  id: string;
+  title: string;
+  summary: string;
+  category: string;
+  status: string;
+  sourceCount: number;
+  currentImpact: number;
+  score: { rationale: string };
+  sources: Array<{ url: string }>;
 }
 
-const liveArticles = ref<Article[]>([]);
+interface Snapshot {
+  currentRpi: number;
+  changeSincePrevious: number;
+  snapshotAt: string;
+  activeEventCount: number;
+  positiveImpactSum: number;
+  negativeImpactSum: number;
+}
+
+interface HistoryPoint {
+  snapshotAt: string;
+  currentRpi: number;
+}
+
+const apiBaseUrl = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:3000";
+const liveEvents = ref<EventItem[]>([]);
+const history = ref<HistoryPoint[]>([]);
+const snapshot = ref<Snapshot | null>(null);
 const loading = ref(true);
+const error = ref("");
+const trendChartElement = ref<HTMLDivElement | null>(null);
+let trendChart: echarts.ECharts | undefined;
 
 onMounted(async () => {
   try {
-    const res = await fetch("http://127.0.0.1:3000/api/articles");
-    const data = await res.json();
-    liveArticles.value = data.articles ?? [];
+    const [eventsRes, snapshotRes, historyRes] = await Promise.all([
+      fetch(`${apiBaseUrl}/api/events`),
+      fetch(`${apiBaseUrl}/api/rpi/current`),
+      fetch(`${apiBaseUrl}/api/rpi/history`)
+    ]);
+    if (![eventsRes, snapshotRes, historyRes].every((response) => response.ok)) {
+      throw new Error("The live RPI service is unavailable.");
+    }
+    const [eventsData, snapshotData, historyData] = await Promise.all([
+      eventsRes.json(), snapshotRes.json(), historyRes.json()
+    ]);
+    liveEvents.value = eventsData.events ?? [];
+    snapshot.value = snapshotData;
+    history.value = historyData.points ?? [];
+    await nextTick();
+    renderTrendChart();
   } catch {
-    liveArticles.value = [];
+    error.value = "Live news could not be loaded. Start the API and try again.";
   } finally {
     loading.value = false;
   }
 });
 
+onUnmounted(() => {
+  window.removeEventListener("resize", resizeTrendChart);
+  trendChart?.dispose();
+  trendChart = undefined;
+});
+
 const positiveEvents = computed(() =>
-  events.filter((event) => event.currentImpact > 0).sort((a, b) => b.currentImpact - a.currentImpact)
+  liveEvents.value.filter((event) => event.currentImpact > 0).sort((a, b) => b.currentImpact - a.currentImpact)
 );
 
 const negativeEvents = computed(() =>
-  events.filter((event) => event.currentImpact < 0).sort((a, b) => a.currentImpact - b.currentImpact)
+  liveEvents.value.filter((event) => event.currentImpact < 0).sort((a, b) => a.currentImpact - b.currentImpact)
 );
-
-const chartPoints = computed(() => {
-  const values = history.map((point) => point.currentRpi);
-  const min = Math.min(...values) - 1;
-  const max = Math.max(...values) + 1;
-
-  return history
-    .map((point, index) => {
-      const x = (index / Math.max(history.length - 1, 1)) * 100;
-      const y = 100 - ((point.currentRpi - min) / (max - min)) * 100;
-      return `${x},${y}`;
-    })
-    .join(" ");
-});
 
 function formatChange(value: number): string {
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
+}
+
+function sourceUrl(event: EventItem): string | undefined {
+  return event.sources[0]?.url;
+}
+
+function formatSnapshotTime(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(new Date(value));
+}
+
+function renderTrendChart(): void {
+  if (!trendChartElement.value || history.value.length === 0) return;
+
+  trendChart?.dispose();
+  trendChart = echarts.init(trendChartElement.value, undefined, { renderer: "canvas" });
+  trendChart.setOption({
+    animationDuration: 650,
+    grid: { top: 28, right: 20, bottom: 30, left: 48 },
+    tooltip: {
+      trigger: "axis",
+      backgroundColor: "#18212f",
+      borderWidth: 0,
+      padding: [10, 12],
+      textStyle: { color: "#ffffff" },
+      formatter: (params: Array<{ dataIndex: number }>) => {
+        const point = history.value[params[0]?.dataIndex ?? 0];
+        return point ? `${formatSnapshotTime(point.snapshotAt)}<br/><strong>RPI ${point.currentRpi.toFixed(2)}</strong>` : "";
+      }
+    },
+    xAxis: {
+      type: "category",
+      boundaryGap: false,
+      data: history.value.map((point) => new Date(point.snapshotAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })),
+      axisLine: { lineStyle: { color: "#dce5eb" } },
+      axisLabel: { color: "#607084", fontSize: 11, interval: 5 },
+      axisTick: { show: false }
+    },
+    yAxis: {
+      type: "value",
+      scale: true,
+      axisLabel: { color: "#607084", fontSize: 11, formatter: (value: number) => value.toFixed(0) },
+      splitLine: { lineStyle: { color: "#edf2f5" } }
+    },
+    series: [{
+      name: "RPI",
+      type: "line",
+      smooth: false,
+      data: history.value.map((point) => point.currentRpi),
+      symbol: "circle",
+      symbolSize: 7,
+      lineStyle: { color: "#246b88", width: 3 },
+      itemStyle: { color: "#246b88", borderColor: "#ffffff", borderWidth: 2 },
+      areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+        { offset: 0, color: "rgba(36, 107, 136, 0.28)" },
+        { offset: 1, color: "rgba(36, 107, 136, 0.02)" }
+      ]) }
+    }]
+  });
+  window.addEventListener("resize", resizeTrendChart, { passive: true });
+}
+
+function resizeTrendChart(): void {
+  trendChart?.resize();
 }
 </script>
 
@@ -59,15 +154,16 @@ function formatChange(value: number): string {
         <p class="eyebrow">Renpin Index</p>
         <h1>Global RPI</h1>
       </div>
-      <div class="timestamp">Snapshot {{ snapshot.snapshotAt }}</div>
+      <div class="timestamp">{{ snapshot ? `Live snapshot ${snapshot.snapshotAt}` : "Loading live snapshot…" }}</div>
     </section>
 
-    <section class="index-panel">
+    <section v-if="snapshot" class="index-panel">
       <div class="index-value">
         <span>{{ snapshot.currentRpi.toFixed(2) }}</span>
         <strong :class="{ positive: snapshot.changeSincePrevious >= 0 }">
           {{ formatChange(snapshot.changeSincePrevious) }}
         </strong>
+        <small>change since previous snapshot</small>
       </div>
       <div class="index-stats">
         <div>
@@ -83,28 +179,40 @@ function formatChange(value: number): string {
           <strong>{{ snapshot.negativeImpactSum.toFixed(2) }}</strong>
         </div>
       </div>
-      <svg class="line-chart" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="RPI history chart">
-        <polyline :points="chartPoints" />
-      </svg>
+      <div ref="trendChartElement" class="line-chart" role="img" aria-label="Interactive RPI history chart. Hover or click a point to see its time and RPI value." />
     </section>
 
+    <p v-if="error" class="loading-text">{{ error }}</p>
+
     <section class="movement-grid">
-      <div>
-        <h2>Positive Movers</h2>
+      <div class="mover-panel positive-panel">
+        <div class="mover-heading">
+          <span class="mover-signal" aria-hidden="true">↑</span>
+          <div>
+            <p>Improving pressure</p>
+            <h2>Positive Movers</h2>
+          </div>
+        </div>
         <article v-for="event in positiveEvents" :key="event.id" class="event-row">
           <div>
-            <h3>{{ event.title }}</h3>
+            <h3><a v-if="sourceUrl(event)" :href="sourceUrl(event)" target="_blank" rel="noopener">{{ event.title }}</a><template v-else>{{ event.title }}</template></h3>
             <p>{{ event.summary }}</p>
           </div>
           <strong class="positive">{{ formatChange(event.currentImpact) }}</strong>
         </article>
       </div>
 
-      <div>
-        <h2>Negative Movers</h2>
+      <div class="mover-panel negative-panel">
+        <div class="mover-heading">
+          <span class="mover-signal" aria-hidden="true">↓</span>
+          <div>
+            <p>Worsening pressure</p>
+            <h2>Negative Movers</h2>
+          </div>
+        </div>
         <article v-for="event in negativeEvents" :key="event.id" class="event-row">
           <div>
-            <h3>{{ event.title }}</h3>
+            <h3><a v-if="sourceUrl(event)" :href="sourceUrl(event)" target="_blank" rel="noopener">{{ event.title }}</a><template v-else>{{ event.title }}</template></h3>
             <p>{{ event.summary }}</p>
           </div>
           <strong>{{ event.currentImpact.toFixed(2) }}</strong>
@@ -112,31 +220,11 @@ function formatChange(value: number): string {
       </div>
     </section>
 
-    <section class="news-feed">
-      <h2>Live Headlines</h2>
-      <p v-if="loading" class="loading-text">Fetching news...</p>
-      <p v-else-if="liveArticles.length === 0" class="loading-text">No articles available.</p>
-      <article v-for="article in liveArticles" :key="article.url" class="news-item">
-        <div class="news-meta">
-          <span class="news-publisher">{{ article.publisher }}</span>
-          <time>{{ article.publishedAt }}</time>
-        </div>
-        <h3><a :href="article.url" target="_blank" rel="noopener">{{ article.headline }}</a></h3>
-        <p v-if="article.excerpt">{{ article.excerpt }}</p>
-      </article>
-    </section>
-
-    <section class="timeline">
-      <h2>Event Timeline</h2>
-      <article v-for="event in events" :key="event.id" class="timeline-item">
-        <div class="timeline-meta">
-          <span>{{ event.category }}</span>
-          <span>{{ event.status }}</span>
-          <span>{{ event.sourceCount }} sources</span>
-        </div>
-        <h3>{{ event.title }}</h3>
-        <p>{{ event.score.rationale }}</p>
-      </article>
-    </section>
+    <footer class="site-footer">
+      <p>Persisted RPI snapshots start at 1000 once; each later update applies new event pressure to the preceding index value.</p>
+      <p><strong>Renpin Index (RPI)</strong> is an experimental, automated estimate based on RSS headlines and excerpts.</p>
+      <p>It is not news reporting, investment advice, or a measure of any individual or group. Scores can be incomplete or wrong and should be checked against the linked source articles.</p>
+      <p>© {{ new Date().getFullYear() }} RPI. Data attribution remains with the original publishers.</p>
+    </footer>
   </main>
 </template>
