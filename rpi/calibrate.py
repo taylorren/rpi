@@ -43,6 +43,10 @@ import statistics
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
+try:
+    import numpy as np
+except Exception:
+    np = None
 
 from . import config as config_mod, paths, schema, storage
 
@@ -59,9 +63,8 @@ MAX_LAG_SEARCH = 800
 def correlation_time(values: Sequence[float]) -> float:
     """Lag at which autocorrelation first falls below 1/e, in snapshots.
 
-    A cheap stand-in for the integrated autocorrelation time. Using an explicit
-    threshold rather than the full integral avoids the noisy tail of the ACF
-    dominating the estimate.
+    Uses a fast FFT‑based autocorrelation when NumPy is available; otherwise
+    falls back to the original naive O(n·lag) implementation.
     """
     n = len(values)
     if n < 4:
@@ -72,14 +75,33 @@ def correlation_time(values: Sequence[float]) -> float:
     if variance <= 0:
         return 0.5
 
+    # Fast path: NumPy FFT autocorrelation
+    if np is not None:
+        arr = np.asarray(values, dtype=float)
+        arr -= arr.mean()
+        # Zero‑pad to at least 2*n for clean circular convolution
+        size = 2 * n
+        fft = np.fft.rfft(arr, n=size)
+        ac = np.fft.irfft(fft * np.conjugate(fft))[:n]
+        # Normalise to correlation coefficient (lag 0 = 1)
+        ac = ac / (variance * np.arange(n, 0, -1))
+        threshold = math.exp(-1.0)
+        # Search up to the configured limit and half the series length
+        max_lag = min(MAX_LAG_SEARCH, n // 2)
+        for lag in range(1, max_lag):
+            if ac[lag] < threshold:
+                return float(lag)
+        return float(max_lag)
+
+    # Naive fallback (original algorithm)
     limit = min(MAX_LAG_SEARCH, n // 2)
     threshold = math.exp(-1.0)
     for lag in range(1, limit):
         covariance = sum((values[i] - mean) * (values[i + lag] - mean)
                          for i in range(n - lag)) / (n - lag)
         if covariance / variance < threshold:
-            return float(max(lag, 1))
-    return float(max(limit, 1))
+            return float(lag)
+    return float(limit)
 
 
 def analyse(values: Sequence[float], snapshot_minutes: int,

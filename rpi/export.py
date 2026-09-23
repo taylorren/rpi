@@ -31,6 +31,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+import bisect
 
 from . import calculator, config as config_mod, paths, schema, storage
 
@@ -93,7 +94,9 @@ and is carried along as context for the decay maths.
         entry = grouped[key]
         start = datetime.fromtimestamp(key * step, tz=timezone.utc)
         end = start + delta
-        volume = sum(1 for moment in item_times if start <= moment < end)
+        lo = bisect.bisect_left(item_times, start)
+        hi = bisect.bisect_left(item_times, end)
+        volume = hi - lo
         out.append({
             "t": entry["t"].isoformat().replace("+00:00", "Z"),
             "level": round(entry["level"], 4),
