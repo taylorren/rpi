@@ -70,6 +70,12 @@ def bucket(points: List[Tuple[datetime, float, float, int, float]],
 expects under an index chart. That is a different quantity from ``n``, the
 number of items currently influencing the index, which is a rolling figure
 and is carried along as context for the decay maths.
+
+    ``item_times`` must be sorted ascending, because the count is taken with
+    ``bisect`` rather than by scanning the sequence per bucket. An unsorted
+    sequence would silently under-count instead of raising, so callers must
+    keep that promise: ``calculator.build_items`` returns items sorted by
+    ``ts``, which is what the pipeline passes in.
     """
     if not points:
         return []

@@ -229,6 +229,10 @@ Stated plainly, because the alternative is pretending.
   state-affiliated, are not the world.
 - **History is short.** The index only knows what those feeds currently publish — a few
   days, not years.
+- **The uncertainty estimate stops looking back at 8 days.** The mood's correlation time
+  is only searched that far, so if it were ever longer, the tool would read 8 days and
+  report *less* uncertainty than is really there. Today it is about 16 hours, so the
+  ceiling is not being reached.
 - **Volume is a proxy for attention, not importance.** A story covered by seven outlets is not seven times as important, though it does enter the index once either way.
 
 ---

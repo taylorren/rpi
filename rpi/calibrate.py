@@ -33,6 +33,33 @@ Usage::
 
     python -m rpi.calibrate
     python -m rpi.calibrate --apply      # write b into rpi.config.json
+
+Dependencies
+------------
+Stdlib only, with one optional extra. When NumPy is importable the autocorrelation is
+computed with an FFT; otherwise the naive ``O(n * lag)`` loop is used. The two are
+numerically identical on every series checked - AR(1), white noise, a linear trend, a
+constant, the short-series guard, and the live 615-snapshot series - so NumPy changes
+only the running time, never the reported numbers. Installing it is not required, and
+this is the only module in the project that reads it.
+
+Measured at a 15-minute snapshot cadence, worst case for the naive path (its search
+running the full ``MAX_LAG_SEARCH``):
+
+    history     snapshots    naive      NumPy
+    6.4 days          615    3.5 ms     2.0 ms
+    1 quarter       8,760    0.9 s      2.1 ms
+    1 year         35,040    3.0 s      7.7 ms
+
+Neither column is slow enough for anyone to notice, on a command that is only ever run
+by hand - this module is deliberately absent from the hourly pipeline, so the choice of
+path cannot affect production.
+
+One limitation worth knowing, since it is not about speed: ``MAX_LAG_SEARCH`` also caps
+the *reported* correlation time at 800 snapshots, which is 8.3 days at this cadence. A
+genuinely longer correlation time would be reported as 8.3 days, and because ``n_eff``
+falls as the correlation time rises, the uncertainty would come out too small. The
+current value is 61 snapshots (0.64 days), well inside the cap.
 """
 
 from __future__ import annotations

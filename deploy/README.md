@@ -54,6 +54,29 @@ workstation analyses it, and only the finished static page flows back.
   If it is down the pipeline still runs and rebuilds the index from stored scores, logging
   a warning rather than failing.
 
+## Dependencies
+
+Nothing has to be installed on either machine. Every stage is stdlib-only, and the one
+third-party import in the repository is optional and confined to a single file:
+
+| Where | Needs | Notes |
+| --- | --- | --- |
+| VPS | Python 3.12 (already present) | runs `fetcher/fetch_rss.py` only. `pip` is not installed on this host. |
+| Workstation (scheduled) | Python 3.14 at `%LOCALAPPDATA%\Programs\Python\Python314` | `run_once.py` + the `rpi` package. Hardcoded as `$PythonExe` in `pull_and_run.ps1`, so a package installed into `.venv` does **not** reach the scheduled run. |
+| Browser | nothing | `ui/index.html` and `data/rpi.json` are static. |
+| `python -m rpi.calibrate` (manual) | optionally NumPy | the only file that reads NumPy; the hourly pipeline never imports it. |
+
+**NumPy is an optimisation, not a requirement.** `rpi/calibrate.py` uses it for an
+FFT-based autocorrelation when it is importable, and falls back to a naive loop when it is
+not. Both produce identical numbers on every series checked, including the live snapshot
+series - so installing NumPy changes only how long a manual calibration report takes, and
+that is too quick to notice either way (about 3 ms at the current 615 snapshots, and
+0.8 - 3.0 s even after a year of history, against 7.7 ms with NumPy). The measurements are
+recorded in that file's docstring and in `REQUIREMENTS.md`.
+
+Consequently: **do not install anything to "make the pipeline work".** If an `import numpy`
+failure ever appears in a log, the tool will have already fallen back on its own.
+
 ## Deploying the fetcher to the VPS
 
 ```powershell

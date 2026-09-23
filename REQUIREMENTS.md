@@ -108,6 +108,45 @@ Also NOTE: a VPN-dependent pipeline inherits the VPN's availability. If the VPN 
 fetcher silently degrades to the small direct-reachability set. `chinanews-world` and
 `solidot` are retained in the config precisely as no-VPN fallbacks.
 
+# Dependencies
+
+**Decision: no required third-party package anywhere.** Every stage runs on the standard
+library alone - the fetcher on the VPS (Python 3.12, where `pip` is not even installed),
+the pipeline on the workstation's system Python, and the front end in the browser. There
+is no `requirements.txt`, and one is not planned: a pipeline that can be dropped onto a
+bare host is worth more than the convenience of a dependency.
+
+One optional exception, confined to a single file:
+
+| File | Optional dependency | Purpose | Without it |
+| --- | --- | --- | --- |
+| `rpi/calibrate.py` | NumPy | FFT-based autocorrelation | falls back to the naive `O(n * lag)` loop, same result |
+
+Constraints this implies:
+
+- **The fallback is the reference implementation, not a degraded mode.** Both paths were
+  checked against each other and against a brute-force reference, on the live snapshot
+  series and on synthetic ones; they return identical values. Any future change must keep
+  that property, or an optional dependency has quietly become a behaviour switch.
+- **Nothing in the hourly pipeline reads NumPy.** `run_once.py` does not import
+  `rpi.calibrate`, and the interpreter the schedule uses does not have NumPy installed -
+  so a missing or broken NumPy cannot affect production, only a manual calibration run.
+- **The import must never be fatal.** It is guarded, so an absent NumPy degrades to the
+  fallback rather than failing the tool.
+
+Measured at a 15-minute snapshot cadence (the naive worst case assumes the search runs to
+its 800-lag cap, and results are identical either way):
+
+| History | Snapshots | Naive | NumPy |
+| --- | --- | --- | --- |
+| 6.4 days (current) | 615 | 3.1 - 3.5 ms | 2.0 ms |
+| 1 year | 35,040 | 0.8 - 3.0 s | 7.7 ms |
+| 5 years | 175,200 | 3.4 - 15.6 s | 41 ms |
+
+Conclusion recorded at the time: NumPy is **headroom, not a fix**. At the sizes this
+project has, and is likely to have, the fallback is not slow enough for anyone to notice,
+so installing it is optional in the strongest sense.
+
 # News analyser
 
 The API server can answer questions like: 
