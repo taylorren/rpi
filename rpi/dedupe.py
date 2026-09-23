@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -206,6 +207,7 @@ def rebuild_clusters(conn: Any, cfg: config_mod.RpiConfig,
     window = timedelta(hours=cfg.dedupe_window_hours)
     # (cluster_id, representative row, event time) for clusters seen so far.
     reps: List[Tuple[int, Any, Optional[datetime]]] = []
+    rep_index: Dict[int, int] = {}
 
     for item in items:
         moment = event_time(item)
@@ -265,6 +267,15 @@ def rebuild_clusters(conn: Any, cfg: config_mod.RpiConfig,
         if chosen is not None:
             score, cluster_id, method = chosen
             storage.add_member(conn, item["id"], cluster_id, False, score, method)
+            # Use the richest member found so far as the matching exemplar for
+            # later items. Final representative election still happens after
+            # the pass, but updating here avoids comparing every later item to
+            # a terse first headline when a fuller duplicate is already known.
+            index = rep_index.get(cluster_id)
+            if index is not None:
+                _old_cluster, rep, _rep_moment = reps[index]
+                if len(item["summary"] or "") > len(rep["summary"] or ""):
+                    reps[index] = (cluster_id, item, moment)
             stats["merged"] += 1
         else:
             # Nothing matched: this item starts a new cluster.
@@ -272,6 +283,7 @@ def rebuild_clusters(conn: Any, cfg: config_mod.RpiConfig,
                   if moment else None)
             cluster_id = storage.add_cluster(conn, item["id"], ts)
             storage.add_member(conn, item["id"], cluster_id, True, None, "new")
+            rep_index[cluster_id] = len(reps)
             reps.append((cluster_id, item, moment))
             stats["clusters"] += 1
 
@@ -327,6 +339,14 @@ def _reelect_representatives(conn: Any) -> None:
 # CLI
 # --------------------------------------------------------------------------- #
 
+def _memory_copy(conn: sqlite3.Connection) -> sqlite3.Connection:
+    """Return an in-memory copy of ``conn`` for non-mutating dry runs."""
+    copy = sqlite3.connect(":memory:")
+    copy.row_factory = sqlite3.Row
+    conn.backup(copy)
+    return copy
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Rebuild duplicate clusters from stored items.")
@@ -339,32 +359,38 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     cfg = config_mod.load()
     conn = storage.connect(args.db)
+    work_conn = conn
     try:
-        if not args.dry_run and not api.is_available(cfg.endpoint):
+        if args.dry_run:
+            work_conn = _memory_copy(conn)
+
+        if not api.is_available(cfg.endpoint):
             print("WARNING API unreachable at {}; only local matching will work"
                   .format(cfg.endpoint))
 
-        before = storage.counts(conn)
+        before = storage.counts(work_conn)
         print("clustering {} item(s) (window {}h, auto-merge {}, floor {}, api {})"
               .format(before["items"], cfg.dedupe_window_hours,
                       cfg.dedupe_auto_merge, cfg.dedupe_reject_floor,
                       cfg.dedupe_api_threshold))
 
-        stats = rebuild_clusters(conn, cfg, verbose=True)
+        stats = rebuild_clusters(work_conn, cfg, verbose=True)
 
         if args.show_groups:
-            groups = storage.duplicate_groups(conn)
+            groups = storage.duplicate_groups(work_conn)
             print()
             print("{} cluster(s) contain more than one item:".format(len(groups)))
             for group in groups[:args.show_groups]:
-                sources = storage.cluster_sources(conn, int(group["cluster_id"]))
+                sources = storage.cluster_sources(work_conn, int(group["cluster_id"]))
                 print("  [{}] {}  ({})".format(
                     group["member_count"], group["title"][:58],
                     ", ".join(sources)))
 
         if args.dry_run:
-            print("\n(dry run - note clusters were still rebuilt in the store)")
+            print("\n(dry run - no changes written)")
     finally:
+        if work_conn is not conn:
+            work_conn.close()
         conn.close()
     return 0
 

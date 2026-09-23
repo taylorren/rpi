@@ -334,20 +334,40 @@ def analysed_rows(conn: sqlite3.Connection, schema_version: int) -> List[sqlite3
     Where an item belongs to a cluster, the cluster's ``first_published`` is
     exposed as the event time: a story should enter the time series when it
     first broke, not when the slowest outlet got round to covering it.
+
+    A cluster contributes at most one analysed item. Prefer the current
+    representative, but fall back to any already analysed member so re-electing
+    a richer representative cannot temporarily remove the story from the index.
     """
     return list(conn.execute(
-        "SELECT i.id, i.title, i.link, i.source, i.published, i.fetched_at,"
-        "       a.sentiment, a.impact_expected, a.impact, a.scope,"
-        "       m.cluster_id, m.is_representative,"
-        "       c.first_published AS cluster_first_published,"
-        "       c.member_count AS cluster_member_count"
+        "WITH analysed AS ("
+        " SELECT i.id, i.title, i.link, i.source, i.published, i.fetched_at,"
+        "        a.analyzed_at, a.sentiment, a.impact_expected, a.impact, a.scope,"
+        "        m.cluster_id, m.is_representative,"
+        "        c.first_published AS cluster_first_published,"
+        "        c.member_count AS cluster_member_count,"
+        "        COALESCE(CAST(m.cluster_id AS TEXT), i.id) AS group_key,"
+        "        CASE WHEN m.item_id IS NULL OR i.id = c.representative"
+        "             THEN 0 ELSE 1 END AS representative_rank"
         " FROM analyses a"
         " JOIN items i ON i.id = a.item_id"
         " LEFT JOIN cluster_members m ON m.item_id = i.id"
         " LEFT JOIN clusters c ON c.cluster_id = m.cluster_id"
         " WHERE a.schema_version = ?"
-        "   AND (m.item_id IS NULL OR m.is_representative = 1)"
-        " ORDER BY COALESCE(c.first_published, i.published, i.fetched_at) ASC",
+        "), ranked AS ("
+        " SELECT *, ROW_NUMBER() OVER ("
+        "   PARTITION BY group_key"
+        "   ORDER BY representative_rank ASC, analyzed_at DESC, id ASC"
+        " ) AS row_number"
+        " FROM analysed"
+        ")"
+        "SELECT id, title, link, source, published, fetched_at,"
+        "       sentiment, impact_expected, impact, scope,"
+        "       cluster_id, is_representative, cluster_first_published,"
+        "       cluster_member_count"
+        " FROM ranked"
+        " WHERE row_number = 1"
+        " ORDER BY COALESCE(cluster_first_published, published, fetched_at) ASC",
         (schema_version,)))
 
 

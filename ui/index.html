@@ -581,7 +581,9 @@ function windowStart(win) {
 function renderNews(d) {
   const start = windowStart(WINDOW);
   const all = d.news || [];
-  const rows = all.filter(n => new Date(n.t) >= start);
+  const rows = d.news_windows && d.news_windows[WINDOW]
+    ? d.news_windows[WINDOW]
+    : all.filter(n => new Date(n.t) >= start);
 
   document.getElementById("newshead").textContent =
     "News analysed \u2014 " + rows.length +

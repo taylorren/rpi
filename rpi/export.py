@@ -106,7 +106,8 @@ and is carried along as context for the decay maths.
 
 
 def build_news(rows: Iterable[Any], cfg: config_mod.RpiConfig,
-               conn: Any = None, limit: int = 400) -> List[Dict[str, Any]]:
+               conn: Any = None, limit: int = 400,
+               start: Optional[datetime] = None) -> List[Dict[str, Any]]:
     """The audit list: which news items produced the index, with provenance.
 
     Newest first, capped so the export cannot grow without bound. Each entry
@@ -121,6 +122,8 @@ def build_news(rows: Iterable[Any], cfg: config_mod.RpiConfig,
               or calculator.parse_ts(calculator.row_get(row, "published"))
               or calculator.parse_ts(calculator.row_get(row, "fetched_at")))
         if ts is None:
+            continue
+        if start is not None and ts < start:
             continue
         sentiment = (row["sentiment"] or "").lower()
         scope = row["scope"] or ""
@@ -211,6 +214,14 @@ def build_payload(conn: Any, cfg: config_mod.RpiConfig, schema_version: int,
     # "today" means the current UTC day, matching the fetcher's daily files.
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     today_points = [point for point in points if point[0] >= midnight] or within(1.0)
+    news_windows = {
+        "today": build_news(analysis_rows, cfg, conn=conn, limit=news_limit,
+                            start=midnight),
+        "1w": build_news(analysis_rows, cfg, conn=conn, limit=news_limit,
+                         start=now - timedelta(days=7.0)),
+        "1m": build_news(analysis_rows, cfg, conn=conn, limit=news_limit,
+                         start=now - timedelta(days=30.0)),
+    }
 
     return {
         "meta": {
@@ -235,6 +246,7 @@ def build_payload(conn: Any, cfg: config_mod.RpiConfig, schema_version: int,
             "1w": bucket(within(7.0), timedelta(hours=1), item_times),
             "1m": bucket(within(30.0), timedelta(days=1), item_times),
         },
+        "news_windows": news_windows,
         "news": build_news(analysis_rows, cfg, conn=conn, limit=news_limit),
     }
 
