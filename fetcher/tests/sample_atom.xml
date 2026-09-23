@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Sample News (Atom)</title>
+  <link href="https://example.invalid/atom" rel="self"/>
+  <updated>2026-09-23T10:00:00Z</updated>
+
+  <entry>
+    <title>Peace talks resume after three-year pause</title>
+    <link rel="alternate" type="text/html" href="https://example.invalid/atom/peace-talks"/>
+    <link rel="self" type="application/atom+xml" href="https://example.invalid/atom/peace-talks.xml"/>
+    <id>tag:example.invalid,2026:peace-talks</id>
+    <updated>2026-09-23T08:30:00.1234567Z</updated>
+    <summary type="html">&lt;p&gt;Negotiators returned to the table in a move
+      observers called &lt;em&gt;unexpected&lt;/em&gt;.&lt;/p&gt;</summary>
+  </entry>
+
+  <entry>
+    <title>Hospital network restores systems after outage</title>
+    <link href="https://example.invalid/atom/hospital-systems"/>
+    <id>tag:example.invalid,2026:hospital</id>
+    <published>2026-09-22T23:05:00Z</published>
+    <content type="html">&lt;div&gt;&lt;p&gt;Services resumed at 41 sites.&lt;/p&gt;&lt;/div&gt;</content>
+  </entry>
+
+</feed>

@@ -1,0 +1,91 @@
+{
+  "_policy": "English sources are preferred (see REQUIREMENTS.md > RSS source(s)). A source is only acceptable if it is (1) reachable, (2) serving current dates, and (3) carrying real article text rather than titles only. Run `python fetcher/fetch_rss.py --check-sources` to apply that test to every entry here.",
+
+  "_deployment": "Production runs on an OVERSEAS VPS where all of these feeds are reachable directly - there is no GFW constraint in production. Local development is behind the GFW and sees a much smaller subset, so DO NOT pick sources by local reachability. Re-run `--check-sources` on the VPS before trusting any verdict here: staleness and empty summaries are network-independent and are the checks that actually matter.",
+
+  "_proxy": "Local-testing convenience only. Default \"auto\" (env vars, and on Windows the WinINET registry, which is how a local VPN is picked up) | \"none\" for a direct connection | an explicit http://host:port. A VPS needs no proxy. The resolved value is logged on every run.",
+
+  "_rejected": {
+    "people.com.cn": "reachable but frozen at 2025-06-05",
+    "www.xinhuanet.com/english": "reachable but frozen at 2017-2018",
+    "www.globaltimes.cn": "reachable but descriptions are empty (titles only)",
+    "www.sixthtone.com": "reachable but no published dates at all",
+    "sspai.com": "reachable but a consumer-tech blog, not news",
+    "chinadaily.com.cn": "RSS paths return 404 (retired)",
+    "tass.com": "reachable and current, but weaker than the alternatives now available via VPN"
+  },
+
+  "feeds": [
+    {
+      "name": "cgtn-world",
+      "url": "https://www.cgtn.com/subscribe/rss/section/world.xml",
+      "enabled": true,
+      "_status": "VERIFIED: reachable, current, 242-999 char summaries. English. Formerly the only source."
+    },
+    {
+      "name": "aljazeera-all",
+      "url": "https://www.aljazeera.com/xml/rss/all.xml",
+      "enabled": true,
+      "_status": "ENABLED. Reachable via local VPN: current, 96-118 char summaries. English. NOTE: the feed mixes hard news with video and sport items, so 'all' may be noisier than a category feed."
+    },
+    {
+      "name": "guardian-world",
+      "url": "https://www.theguardian.com/world/rss",
+      "enabled": true,
+      "_status": "ENABLED. Reachable via VPN: current, RICHEST summaries measured (571-841 chars). English."
+    },
+    {
+      "name": "scmp",
+      "url": "https://www.scmp.com/rss/91/feed",
+      "enabled": false,
+      "_status": "VERIFIED via VPN: reachable, current, 499-500 char summaries. English."
+    },
+    {
+      "name": "nyt-world",
+      "url": "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
+      "enabled": false,
+      "_status": "VERIFIED via VPN: reachable, current, 131-166 char summaries. English."
+    },
+    {
+      "name": "bbc-world",
+      "url": "https://feeds.bbci.co.uk/news/world/rss.xml",
+      "enabled": true,
+      "_status": "ENABLED. Reachable via VPN: current, terse summaries (107-131 chars). English."
+    },
+    {
+      "name": "npr-world",
+      "url": "https://feeds.npr.org/1004/rss.xml",
+      "enabled": false,
+      "_status": "VERIFIED via VPN: reachable, current, 119-230 char summaries. English."
+    },
+    {
+      "name": "cna",
+      "url": "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml",
+      "enabled": false,
+      "_status": "VERIFIED via VPN: reachable and current, BUT some items have EMPTY summaries and the feed carried soft news (a celebrity profile). Weakest candidate."
+    },
+    {
+      "name": "chinanews-world",
+      "url": "https://www.chinanews.com.cn/rss/world.xml",
+      "enabled": false,
+      "_status": "DISABLED candidate. Reachable WITHOUT a VPN. Chinese-language and short (~80 char) summaries. Useful as an offline fallback if the proxy is ever unavailable."
+    },
+    {
+      "name": "solidot",
+      "url": "https://www.solidot.org/index.rss",
+      "enabled": false,
+      "_status": "DISABLED candidate. Reachable WITHOUT a VPN. ~400 char summaries, but Chinese-language and tech/security skewed."
+    }
+  ],
+
+  "_active_set": "Four sources: CGTN (China, state), Al Jazeera (Qatar, state-funded), BBC (UK, public), Guardian (UK, independent). Chosen for a mix of state-affiliated and independent outlets, since a single state-affiliated source measurably skewed the sentiment breadth (70% positive alone vs 32% positive across four). Further candidates remain disabled below: scmp, nyt-world, npr-world, cna, chinanews-world, solidot.",
+
+  "proxy": "auto",
+
+  "_max_items_note": "Cap on items taken per feed per poll. In steady state it is irrelevant - only ~3 new items per feed appear between hourly polls - but on the first run after a change it decides how far back the index history reaches. The feeds expose cgtn 50, guardian 45, bbc 27, aljazeera 25 items, so 50 takes everything available and backfills as far as each feed's window allows (roughly 4-6 days). The cost is one-off: extra items are analysed once, then cached. GOTCHA: a per-feed \"max_items\" OVERRIDES this global value, so setting only the global while a feed entry still carries its own silently does nothing.",
+  "max_items_per_feed": 50,
+  "max_summary_chars": 1000,
+  "max_title_chars": 300,
+  "timeout": 20,
+  "state_retention_days": 30
+}

@@ -1,0 +1,156 @@
+# Python virtual environment
+.venv/
+venv/
+env/
+ENV/
+.env
+
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test and coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Environments
+.env
+.env.local
+.env.*.local
+*.env
+
+# IDEs and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+.union
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+logs/
+*.log
+*.log.*
+
+# Generated data files (state, inbox, etc.)
+data/*.json
+state/*.json
+state/*.jsonl
+inbox/*.jsonl
+
+# Temporary/local fetch output
+state/local-fetch-*.jsonl
+
+# Deploy scripts - keep only if needed for distribution
+# deploy/*.ps1  # PowerShell scripts for deployment
+
+# Nginx configuration - may contain sensitive paths
+deploy/nginx-*.conf
+
+# Secrets and credentials
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
+*~
+
+# Database files (if any SQLite or similar)
+*.db
+*.sqlite
+*.sqlite3
+
+# Compiled UI or assets
+*.min.js
+*.min.css
+
+# Jupyter Notebooks (if used)
+.ipynb_checkpoints
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# ruff
+.ruff_cache/
+
+# f2py
+*.f2py_map
+
+# Nuitka
+*.bin
+
+# pycharm
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Spyder
+.spyderproject
+.spyproject
+
+# Rope
+.ropeproject
+
+# Cython
+.cython

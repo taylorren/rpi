@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Sample News (RSS 2.0)</title>
+    <link>https://example.invalid/news</link>
+    <description>Fixture used to smoke-test fetch_rss.py offline.</description>
+
+    <item>
+      <title>Central bank holds rates, citing cooling inflation</title>
+      <link>https://example.invalid/news/rates-hold?utm_source=rss&amp;utm_medium=feed&amp;fbclid=abc123#section-2</link>
+      <description><![CDATA[<p>The bank left its benchmark rate unchanged at 3.5%, saying
+        price growth had <strong>slowed</strong> for a fourth month.</p><p>Officials flagged
+        &quot;persistent uncertainty&quot; in energy markets.</p>]]></description>
+      <pubDate>Tue, 23 Sep 2026 09:14:00 GMT</pubDate>
+      <guid isPermaLink="false">example-rates-hold</guid>
+    </item>
+
+    <item>
+      <title>Regional drought pushes food prices higher</title>
+      <link>https://example.invalid/news/drought-prices</link>
+      <description>&lt;p&gt;Crop yields fell 18% across the region, with &amp;nbsp;staple
+        costs rising fastest.&lt;/p&gt;</description>
+      <pubDate>Tue, 23 Sep 2026 07:02:30 +0000</pubDate>
+    </item>
+
+    <item>
+      <title>Volunteers clear record tonnage from coastal cleanup</title>
+      <link>https://www.example.invalid/news/cleanup</link>
+      <description><![CDATA[<script>tracker.push("ignored");</script>
+        <p>More than 40 tonnes of plastic were recovered over the weekend.</p>]]></description>
+      <pubDate>Mon, 22 Sep 2026 18:45:00 GMT</pubDate>
+    </item>
+
+    <item>
+      <title>Undated item still needs to survive parsing</title>
+      <link>https://example.invalid/news/no-date</link>
+      <description>Some feeds omit pubDate entirely.</description>
+    </item>
+
+  </channel>
+</rss>

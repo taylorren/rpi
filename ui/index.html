@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RPI &middot; Renpin Index</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #111821;
+    --line: #1f2b3a;
+    --text: #e6edf5;
+    --muted: #8fa3b8;
+    --up: #22c55e;
+    --down: #ef4444;
+    --accent: #38bdf8;
+    --warn: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 15px; letter-spacing: .14em; text-transform: uppercase;
+       color: var(--muted); margin: 0; font-weight: 600; }
+  .asof { color: var(--muted); font-size: 12px; margin-left: auto; }
+
+  .quote { display: flex; align-items: flex-end; gap: 14px; margin: 10px 0 2px; }
+  .level { font-size: 42px; font-weight: 700; letter-spacing: -.02em;
+           font-variant-numeric: tabular-nums; line-height: 1; }
+  .delta { font-size: 28px; font-weight: 800; padding-bottom: 2px;
+           font-variant-numeric: tabular-nums; line-height: 1; }
+  .up { color: var(--up); } .down { color: var(--down); } .flat { color: var(--muted); }
+  .arrow { font-size: 22px; vertical-align: bottom; margin-right: 2px; }
+
+  .banner { margin-top: 12px; padding: 9px 12px; border-radius: 6px;
+            border: 1px solid rgba(245,158,11,.35); background: rgba(245,158,11,.08);
+            color: var(--warn); font-size: 12px; }
+  .banner.hidden { display: none; }
+
+  .panel { margin-top: 14px; background: var(--panel); border: 1px solid var(--line);
+           border-radius: 10px; padding: 14px; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  button {
+    background: transparent; color: var(--muted); border: 1px solid var(--line);
+    padding: 5px 13px; border-radius: 6px; cursor: pointer;
+    font: inherit; font-size: 12px;
+  }
+  button:hover { color: var(--text); border-color: #2c3d52; }
+  button.active { color: #041018; background: var(--accent); border-color: var(--accent);
+                  font-weight: 700; }
+
+  svg { display: block; width: 100%; height: 350px; overflow: visible; }
+  .grid { stroke: var(--line); stroke-width: 1; }
+  .axis { fill: var(--muted); font-size: 11px; }
+  .base { stroke: #64748b; stroke-width: 1; stroke-dasharray: 3 4; opacity: .7; }
+  .cross { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 3; opacity: .8; }
+  .dot { fill: var(--accent); }
+
+  .tip {
+    position: fixed; pointer-events: none; opacity: 0; transition: opacity .08s;
+    background: #04070b; border: 1px solid var(--line); border-radius: 6px;
+    padding: 7px 10px; font-size: 11.5px; white-space: nowrap; z-index: 20;
+    font-variant-numeric: tabular-nums;
+  }
+  .tip.on { opacity: 1; }
+  .tip b { font-size: 13px; }
+
+  /* A fixed column count rather than auto-fit. auto-fit made the number of
+     columns depend on the viewport, so the cells landed as a ragged 7 + 3.
+     Eight cells divide evenly into four (and into two on narrow screens), so
+     the block is always a complete rectangle. */
+  .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+           gap: 12px; margin-top: 14px; }
+  .stat { background: var(--panel); border: 1px solid var(--line);
+          border-radius: 8px; padding: 10px 12px; }
+  .stat .k { color: var(--muted); font-size: 10.5px; letter-spacing: .1em;
+             text-transform: uppercase; }
+  .stat .v { font-size: 18px; font-weight: 600; margin-top: 3px;
+             font-variant-numeric: tabular-nums; }
+  /* Every cell carries a footnote, so the block reads as a table rather than as
+     a row of numbers whose meanings have to be guessed. */
+  .stat .s { color: var(--muted); font-size: 11px; margin-top: 3px;
+             font-variant-numeric: tabular-nums; }
+  .stat .v.warn { color: var(--warn); }
+  .stat .v .slash { color: var(--muted); font-weight: 400; padding: 0 2px; }
+  /* Breadth is one share split two ways. Two boxes for it wasted a slot and
+     hid the ratio; the track is the negative side, the fill is the positive. */
+  .split { height: 5px; border-radius: 3px; margin-top: 7px;
+           background: rgba(239,68,68,.45); overflow: hidden; }
+  .split > i { display: block; height: 100%; background: var(--up); }
+  @media (max-width: 720px) {
+    .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  footer { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line);
+           color: var(--muted); font-size: 11px; line-height: 1.6; }
+  .fmeta { display: flex; gap: 14px; flex-wrap: wrap; }
+  .fcredit { margin-top: 9px; }
+  .fcredit a { color: var(--accent); text-decoration: none; }
+  .fcredit a:hover { text-decoration: underline; }
+  .fdisclaimer { margin-top: 11px; padding: 10px 12px; border-radius: 6px;
+                 border: 1px solid var(--line); background: rgba(255,255,255,.02);
+                 color: #9fb0c2; }
+  .fdisclaimer b { color: var(--text); }
+  .err { color: var(--down); }
+
+  .newshead { color: var(--muted); font-size: 10.5px; letter-spacing: .1em;
+              text-transform: uppercase; margin-bottom: 6px; }
+  .list { max-height: 400px; overflow-y: auto; }
+  .row { display: grid; grid-template-columns: 14px 1fr auto; gap: 10px;
+         align-items: baseline; padding: 7px 2px;
+         border-top: 1px solid var(--line); }
+  .row:first-child { border-top: none; }
+  /* The heading and its duplicate badge share a single grid cell. Left as
+     siblings each one counted as its own column, so on exactly the rows that
+     carried a badge the meta text was pushed onto a second line. */
+  .ttlcell { min-width: 0; }
+  /* Sentiment marker for each story. The glyph shape carries the same
+     information as the colour, so the reading survives colour-blindness and
+     greyscale printing, and it uses the arrow vocabulary the header already
+     uses for the index's own move. */
+  .ico { font-size: 12px; line-height: 1; text-align: center; }
+  .ico.pos { color: var(--up); }
+  .ico.neg { color: var(--down); }
+  .ico.zero { color: #64748b; }
+  .dupe { background: rgba(56,189,248,.14); color: var(--accent);
+          border: 1px solid rgba(56,189,248,.35); border-radius: 4px;
+          padding: 0 5px; font-size: 10.5px; font-weight: 700;
+          margin-left: 5px; white-space: nowrap; }
+  .ttl { color: var(--text); text-decoration: none; }
+  a.ttl:hover { color: var(--accent); text-decoration: underline; }
+  .meta { color: var(--muted); font-size: 11.5px; white-space: nowrap;
+          font-variant-numeric: tabular-nums; }
+  .empty { color: var(--muted); font-size: 12px; padding: 6px 0; }
+  .pos { color: var(--up); }
+  .neg { color: var(--down); }
+  .wlabel { color: var(--muted); font-size: 12px; font-weight: 400; }
+
+  .legend { display: flex; gap: 16px; font-size: 10.5px; color: var(--muted);
+            margin: 0 0 8px 2px; }
+  .legend i { display: inline-block; width: 13px; margin-right: 5px;
+              vertical-align: middle; }
+  .legend i.line { height: 2px; }
+  .legend i.dashed { height: 0; border-top: 2px dashed var(--warn); }
+  .legend i.bar { height: 8px; background: rgba(56,189,248,.45); }
+
+  .vol { fill: rgba(56,189,248,.30); }
+  .volbar { stroke: var(--line); stroke-width: 1; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Renpin Index</h1>
+    <span class="asof" id="asof">loading&hellip;</span>
+  </header>
+
+  <div class="quote">
+    <div class="level" id="level">&mdash;</div>
+    <div class="delta" id="delta"></div>
+  </div>
+
+  <div class="banner hidden" id="banner"></div>
+
+  <div class="panel">
+    <div class="tabs" id="tabs">
+      <button data-w="today" class="active">Today</button>
+      <button data-w="1w">1 Week</button>
+      <button data-w="1m">1 Month</button>
+    </div>
+    <div class="legend">
+      <span><i class="line" id="swatch-index"></i>index</span>
+      <span><i class="dashed"></i>24h average</span>
+      <span><i class="bar"></i>volume (items)</span>
+    </div>
+    <svg id="chart" viewBox="0 0 1000 350" preserveAspectRatio="none"
+         role="img" aria-label="RPI index level over time with moving average and volume"></svg>
+  </div>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="panel">
+    <div class="newshead" id="newshead">News analysed</div>
+    <div class="list" id="newslist"></div>
+  </div>
+
+  <footer id="foot"></footer>
+</div>
+
+<div class="tip" id="tip"></div>
+
+<script>
+const PAD = { l: 58, r: 16, t: 14, b: 26 };
+// Height of the volume band drawn under the index, and the gap above it.
+const VOL_H = 42, VOL_GAP = 16;
+const W = 1000, H = 350;
+const LABELS = { today: "Today", "1w": "1 week", "1m": "1 month" };
+
+let DATA = null, WINDOW = "today";
+
+const compact = n => n.toLocaleString(undefined, { maximumFractionDigits: 2,
+  minimumFractionDigits: 2 });
+const pct = n => (n >= 0 ? "+" : "") + n.toFixed(3) + "%";
+const esc = s => String(s).replace(/[&<>"]/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function fmtTime(iso, window) {
+  const d = new Date(iso);
+  if (window === "1m") return d.toLocaleDateString(undefined,
+    { month: "short", day: "numeric" });
+  if (window === "1w") return d.toLocaleString(undefined,
+    { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+async function load() {
+  // Served from the project root (so ../data), with a same-dir fallback.
+  for (const url of ["../data/rpi.json", "data/rpi.json", "/data/rpi.json"]) {
+    try {
+      const res = await fetch(url + "?t=" + Date.now(), { cache: "no-store" });
+      if (res.ok) return await res.json();
+    } catch (e) { /* try the next path */ }
+  }
+  throw new Error("could not load rpi.json - run: python -m rpi.export");
+}
+
+function windowChange(d) {
+  // The header should describe the period being looked at, matching the curve.
+  const pts = d.windows[WINDOW] || [];
+  if (pts.length < 2) return null;
+  const first = pts[0].level, last = pts[pts.length - 1].level;
+  const change = last - first;
+  return { change: change, change_pct: first ? (change / first) * 100 : 0 };
+}
+
+function renderQuote(d) {
+  const s = d.summary;
+  const win = windowChange(d);
+  const change = win ? win.change : s.change;
+  const changePct = win ? win.change_pct : s.change_pct;
+  const up = change > 0, dn = change < 0;
+  const cls = up ? "up" : dn ? "down" : "flat";
+
+  document.getElementById("level").textContent = compact(s.level);
+  document.getElementById("level").className = "level";
+  document.getElementById("delta").innerHTML =
+    '<span class="arrow">' + (up ? "\u25B2" : dn ? "\u25BC" : "\u25AC") + "</span> " +
+    '<span class="' + cls + '">' + (up ? "+" : "") + compact(change) +
+    "  " + pct(changePct) + "</span>" +
+    '<span class="wlabel"> \u00B7 ' + esc(LABELS[WINDOW]) + "</span>";
+  document.getElementById("asof").textContent =
+    "as of " + new Date(d.meta.generated_at).toLocaleString();
+}
+
+function renderBanner(d) {
+  // Everything that can go quietly wrong, surfaced in one place. These are the
+  // states where the chart is still drawing but is not telling the whole truth.
+  const el = document.getElementById("banner");
+  const msgs = [];
+
+  if (!d.meta.calibrated) {
+    msgs.push("Baseline b is still the bootstrap value (" + d.meta.baseline_b +
+      "), not calibrated. The level is provisional and will shift once b is " +
+      "frozen from accumulated analyses.");
+  }
+
+  const pending = d.summary.pending || 0;
+  if (pending > 0) {
+    msgs.push(pending + " item(s) are waiting to be analysed - the scoring " +
+      "service may be offline. The index will not reflect them until it returns.");
+  }
+
+  if (d.meta.last_analysis) {
+    const hours = (Date.now() - new Date(d.meta.last_analysis).getTime()) / 36e5;
+    if (hours > 6) {
+      msgs.push("No new analysis for " + hours.toFixed(1) + " hours (last " +
+        new Date(d.meta.last_analysis).toLocaleString() + ").");
+    }
+  }
+
+  if (!msgs.length) {
+    el.classList.add("hidden");
+    el.innerHTML = "";
+    return;
+  }
+  el.classList.remove("hidden");
+  el.innerHTML = msgs.map(m => "<div>" + esc(m) + "</div>").join("");
+}
+
+function renderStats(d) {
+  // Eight cells in two bands. The top row is what the index says; the bottom
+  // row is what it is built from. Two pairs were collapsed to get there: the
+  // two breadth percentages are complements of each other, and S(t) is only
+  // meaningful next to the baseline it is measured against.
+  const s = d.summary;
+  const win = windowChange(d);
+
+  const sign = n => (n >= 0 ? "+" : "\u2212");
+  const delta = n => sign(n) + compact(Math.abs(n));
+  const cents = n => sign(n) + Math.abs(n).toFixed(4);
+  const rate = n => sign(n) + Math.abs(n).toFixed(2) + "%";
+  const dir = n => (n > 0 ? "up" : n < 0 ? "down" : "flat");
+
+  // The two shares are complements, so the second is derived from the first.
+  // Rounding them independently could print 63% / 38%.
+  const directional = s.breadth_positive + s.breadth_negative;
+  const up = Math.round(s.breadth_positive * 100);
+  const down = directional ? 100 - up : 0;
+  const volumeShare = s.volume_total
+    ? Math.round((s.volume_24h / s.volume_total) * 100) + "% of all analysed"
+    : "nothing analysed yet";
+
+  const cells = [
+    ["Change \u00B7 " + LABELS[WINDOW], win ? delta(win.change) : "\u2014",
+     win ? rate(win.change_pct) : "nothing in this window",
+     win ? dir(win.change) : ""],
+    ["Change \u00B7 24h", delta(s.change), rate(s.change_pct), dir(s.change)],
+    ["Mood S(t)", cents(s.s_value),
+     "baseline b = " + (s.baseline === undefined ? "\u2014" : cents(s.baseline)),
+     ""],
+    ["Breadth \u00B7 24h", directional
+      ? '<span class="up">' + up + '%</span><span class="slash">/</span>' +
+        '<span class="down">' + down + '%</span>'
+      : "\u2014",
+     "share of directional items", "",
+     directional ? '<div class="split"><i style="width:' + up + '%"></i></div>' : ""],
+
+    ["Volume \u00B7 24h", String(s.volume_24h), volumeShare, ""],
+    ["Analysed \u00B7 all time", String(s.volume_total),
+     "stories after de-duplication", ""],
+    ["Awaiting", String(s.pending || 0), "fetched, not yet scored",
+     (s.pending || 0) > 0 ? "warn" : ""],
+    ["Dupes merged", String(s.duplicates_removed || 0),
+     "repeat reports folded in", ""],
+  ];
+
+  // Values are assembled here from numbers and fixed markup, so they are
+  // inserted as-is; only the labels and footnotes go through esc(), which is
+  // where anything derived from the feed could end up.
+  document.getElementById("stats").innerHTML = cells.map(([k, v, foot, cls, bar]) =>
+    '<div class="stat"><div class="k">' + esc(k) + '</div>' +
+    '<div class="v' + (cls ? " " + cls : "") + '">' + v + "</div>" +
+    (bar || "") +
+    '<div class="s">' + esc(foot) + "</div></div>").join("");
+}
+
+function niceTicks(lo, hi, count) {
+  const span = hi - lo || 1;
+  const raw = span / count;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= raw) || raw;
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) out.push(v);
+  return out;
+}
+
+function renderChart(d) {
+  const pts = d.windows[WINDOW] || [];
+  const svg = document.getElementById("chart");
+  if (pts.length < 2) {
+    svg.innerHTML = '<text x="500" y="175" class="axis" text-anchor="middle">' +
+      "not enough data for this window yet (" + pts.length + " point" +
+      (pts.length === 1 ? "" : "s") + ")</text>";
+    return;
+  }
+
+  // The panel is split: the index occupies the upper area, volume a lower band.
+  const plotTop = PAD.t;
+  const plotBottom = H - PAD.b - VOL_H - VOL_GAP;
+  const volBase = H - PAD.b;
+
+  const levels = pts.map(p => p.level);
+  const averages = pts.map(p => p.ma);
+  // Auto-scale to the visible data only. Forcing the epoch baseline into the
+  // range would crush a quiet day: with base 100 and today's levels near 99.2,
+  // a real 0.4-point move would occupy under 4% of the panel height and read
+  // as flat. The baseline is drawn separately, and only when it falls inside.
+  // The moving average is included so it cannot fall off the panel.
+  const lo0 = Math.min(...levels, ...averages);
+  const hi0 = Math.max(...levels, ...averages);
+  const span0 = hi0 - lo0;
+  const padY = (span0 > 0 ? span0 : Math.max(Math.abs(hi0), 1) * 0.001) * 0.12;
+  const lo = lo0 - padY, hi = hi0 + padY;
+
+  const times = pts.map(p => new Date(p.t).getTime());
+  const t0 = times[0], t1 = times[times.length - 1];
+
+  const x = t => PAD.l + (t - t0) / (t1 - t0 || 1) * (W - PAD.l - PAD.r);
+  const y = v => plotTop + (hi - v) / (hi - lo || 1) * (plotBottom - plotTop);
+
+  const up = pts[pts.length - 1].level >= pts[0].level;
+  const stroke = up ? "var(--up)" : "var(--down)";
+  const gid = "g" + (up ? "u" : "d");
+
+  const swatch = document.getElementById("swatch-index");
+  if (swatch) swatch.style.background = up ? "var(--up)" : "var(--down)";
+
+  let svgOut = "<defs><linearGradient id='" + gid + "' x1='0' y1='0' x2='0' y2='1'>" +
+    "<stop offset='0%' stop-color='" + (up ? "#22c55e" : "#ef4444") +
+    "' stop-opacity='.28'/>" +
+    "<stop offset='100%' stop-color='" + (up ? "#22c55e" : "#ef4444") +
+    "' stop-opacity='0'/></linearGradient></defs>";
+
+  // horizontal gridlines + y labels
+  for (const v of niceTicks(lo, hi, 5)) {
+    const yy = y(v);
+    svgOut += "<line class='grid' x1='" + PAD.l + "' y1='" + yy + "' x2='" +
+      (W - PAD.r) + "' y2='" + yy + "'/>" +
+      "<text class='axis' x='" + (PAD.l - 8) + "' y='" + (yy + 3.5) +
+      "' text-anchor='end'>" + v.toFixed(1) + "</text>";
+  }
+
+  // epoch baseline - the level the index was born at
+  const by = y(d.meta.base_level);
+  if (by > plotTop && by < plotBottom) {
+    svgOut += "<line class='base' x1='" + PAD.l + "' y1='" + by + "' x2='" +
+      (W - PAD.r) + "' y2='" + by + "'/>";
+  }
+
+  const line = pts.map((p, i) => (i ? "L" : "M") + x(times[i]).toFixed(2) + " " +
+    y(p.level).toFixed(2)).join(" ");
+  const area = line + " L" + x(t1).toFixed(2) + " " + plotBottom + " L" +
+    x(t0).toFixed(2) + " " + plotBottom + " Z";
+
+  svgOut += "<path d='" + area + "' fill='url(#" + gid + ")'/>";
+  svgOut += "<path d='" + line + "' fill='none' stroke='" + stroke +
+    "' stroke-width='2' stroke-linejoin='round'/>";
+
+  // Moving average: shown for multi-day windows only. "today" is raw
+  // snapshots (hourly, 96 points) and smoothing would hide genuine moves;
+  // 1w uses straight line segments; 1m uses a Catmull-Rom spline (smooth,
+  // passes through every MA point).
+  if (WINDOW !== "today") {
+    const maPts = pts.map((p, i) => ({ x: x(times[i]), y: y(p.ma) }));
+    const n = maPts.length;
+    let maD;
+    if (WINDOW === "1m" && n >= 2) {
+      // Convert Catmull-Rom to cubic Bezier segments. Tangents at each point
+      // are the half-chord to each neighbour, giving a smooth curve through
+      // every point without overshooting.
+      const bez = (p0, p1, p2, p3) => {
+        const t = 0.5; // Catmull-Rom tension
+        const cp1x = p1.x + (p2.x - p0.x) * t / 3;
+        const cp1y = p1.y + (p2.y - p0.y) * t / 3;
+        const cp2x = p2.x - (p3.x - p1.x) * t / 3;
+        const cp2y = p2.y - (p3.y - p1.y) * t / 3;
+        return "C" + cp1x.toFixed(2) + " " + cp1y.toFixed(2) + " " +
+          cp2x.toFixed(2) + " " + cp2y.toFixed(2) + " " +
+          p2.x.toFixed(2) + " " + p2.y.toFixed(2);
+      };
+      maD = "M" + maPts[0].x.toFixed(2) + " " + maPts[0].y.toFixed(2);
+      for (let i = 0; i < n - 1; i++) {
+        const p0 = maPts[Math.max(0, i - 1)];
+        const p1 = maPts[i];
+        const p2 = maPts[i + 1];
+        const p3 = maPts[Math.min(n - 1, i + 2)];
+        maD += bez(p0, p1, p2, p3);
+      }
+    } else {
+      maD = pts.map((p, i) => (i ? "L" : "M") + x(times[i]).toFixed(2) +
+        " " + y(p.ma).toFixed(2)).join(" ");
+    }
+    svgOut += "<path d='" + maD + "' fill='none' stroke='var(--warn)'" +
+      " stroke-width='1.5' stroke-dasharray='5 3' opacity='.85'/>";
+  }
+
+  // volume band: items published per bucket
+  const maxVol = Math.max(1, ...pts.map(p => p.v || 0));
+  const barWidth = Math.max(1, (W - PAD.l - PAD.r) / pts.length - 1);
+  svgOut += "<line class='volbar' x1='" + PAD.l + "' y1='" + volBase +
+    "' x2='" + (W - PAD.r) + "' y2='" + volBase + "'/>";
+  pts.forEach((p, i) => {
+    if (!p.v) return;
+    const height = (p.v / maxVol) * VOL_H;
+    svgOut += "<rect class='vol' x='" + (x(times[i]) - barWidth / 2).toFixed(2) +
+      "' y='" + (volBase - height).toFixed(2) + "' width='" + barWidth.toFixed(2) +
+      "' height='" + height.toFixed(2) + "'/>";
+  });
+  svgOut += "<text class='axis' x='" + PAD.l + "' y='" + (plotBottom + 12) +
+    "' text-anchor='start'>volume, peak " + maxVol + " per bucket</text>";
+
+  // x labels
+  const ticks = 5;
+  for (let i = 0; i < ticks; i++) {
+    const t = t0 + (t1 - t0) * (i / (ticks - 1));
+    svgOut += "<text class='axis' x='" + x(t).toFixed(1) + "' y='" + (H - 8) +
+      "' text-anchor='middle'>" + esc(fmtTime(new Date(t).toISOString(), WINDOW)) +
+      "</text>";
+  }
+
+  svgOut += "<line id='cross' class='cross' y1='" + plotTop + "' y2='" + volBase +
+    "' style='display:none'/>";
+  svgOut += "<circle id='dot' class='dot' r='3.5' style='display:none'/>";
+
+  svg.innerHTML = svgOut;
+  attachHover(pts, times, x, y);
+}
+
+function attachHover(pts, times, x, y) {
+  const svg = document.getElementById("chart");
+  const cross = document.getElementById("cross");
+  const dot = document.getElementById("dot");
+  const tip = document.getElementById("tip");
+
+  svg.onmousemove = ev => {
+    const box = svg.getBoundingClientRect();
+    const px = (ev.clientX - box.left) / box.width * W;
+
+    let best = 0, bestD = Infinity;
+    for (let i = 0; i < times.length; i++) {
+      const d = Math.abs(x(times[i]) - px);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    const p = pts[best], cx = x(times[best]), cy = y(p.level);
+    cross.setAttribute("x1", cx); cross.setAttribute("x2", cx);
+    cross.style.display = "";
+    dot.setAttribute("cx", cx); dot.setAttribute("cy", cy);
+    dot.style.display = "";
+
+    tip.innerHTML = "<b>" + compact(p.level) + "</b><br>" +
+      esc(new Date(p.t).toLocaleString()) + "<br>" +
+      "24h avg " + compact(p.ma) + "<br>" +
+      "S(t) " + (p.s >= 0 ? "+" : "") + p.s.toFixed(4) + "<br>" +
+      "volume " + p.v + " \u00B7 active " + p.n;
+    tip.style.left = Math.min(ev.clientX + 14, window.innerWidth - 190) + "px";
+    tip.style.top = Math.max(ev.clientY - 62, 8) + "px";
+    tip.classList.add("on");
+  };
+
+  svg.onmouseleave = () => {
+    cross.style.display = "none";
+    dot.style.display = "none";
+    tip.classList.remove("on");
+  };
+}
+
+function renderFooter(d) {
+  const m = d.meta;
+
+  const technical = [
+    "window " + LABELS[WINDOW],
+    "config v" + m.config_version,
+    "schema v" + m.schema_version,
+    "k = " + m.k,
+    "\u03C4 = " + m.tau_hours + " h",
+    "base = " + m.base_level,
+    "calibrated = " + m.calibrated,
+  ].map(b => "<span>" + esc(b) + "</span>").join("");
+
+  const nimble = '<a href="https://github.com/bespokelabsai/nimble"' +
+    ' target="_blank" rel="noopener noreferrer">Bespoke Nimble</a>';
+  const model = m.model ? esc(m.model) : "unknown";
+
+  document.getElementById("foot").innerHTML =
+    '<div class="fmeta">' + technical + "</div>" +
+    '<div class="fcredit"><b>Inspired by</b> ' + nimble +
+      ", whose Noul / Choice / Score primitives are the question types used here. " +
+      "Scored by <b>" + model + "</b>, running locally and offline.</div>" +
+    '<div class="fdisclaimer"><b>Disclaimer.</b> This index is an AI&#39;s opinion, ' +
+      "not a measurement. Sentiment, impact and scope are subjective judgements made " +
+      "by a language model, and it is wrong sometimes \u2014 occasionally confidently " +
+      "wrong, and more often on unusual wording than on major news. A single " +
+      "odd-looking entry is therefore more likely a model error than a fact about " +
+      "the world, and the moving average is there to be read instead of any one " +
+      "point. Nothing here is financial, political, or any other kind of advice.</div>";
+}
+
+function windowStart(win) {
+  const now = new Date(DATA.meta.generated_at);
+  if (win === "today") {
+    const d = new Date(now);
+    d.setUTCHours(0, 0, 0, 0);
+    return d;
+  }
+  return new Date(now.getTime() - (win === "1w" ? 7 : 30) * 864e5);
+}
+
+function renderNews(d) {
+  const start = windowStart(WINDOW);
+  const all = d.news || [];
+  const rows = all.filter(n => new Date(n.t) >= start);
+
+  document.getElementById("newshead").textContent =
+    "News analysed \u2014 " + rows.length +
+    (rows.length !== all.length ? " of " + all.length : "") +
+    " \u00B7 " + LABELS[WINDOW];
+
+  const body = document.getElementById("newslist");
+  if (!rows.length) {
+    body.innerHTML = '<div class="empty">No analysed items fall inside this window.</div>';
+    return;
+  }
+
+  body.innerHTML = rows.map(n => {
+    // Two separate questions, so two separate variables. The icon reports how
+    // the model read the story's tone; the colour on the contribution figure
+    // reports which way the arithmetic actually pushed the index.
+    const tone = (n.sentiment || "").toLowerCase();
+    const icon = tone === "positive" ? "\u25B2"
+      : tone === "negative" ? "\u25BC" : "\u25AC";
+    const toneCls = tone === "positive" ? "pos"
+      : tone === "negative" ? "neg" : "zero";
+    const cls = n.signed > 0 ? "pos" : n.signed < 0 ? "neg" : "zero";
+    const when = new Date(n.t).toLocaleString(undefined,
+      { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+
+    // Show the arithmetic, so any entry can be checked by hand:
+    // polarity x expected impact x scope weight = contribution.
+    const signed = n.signed;
+    const contribution = (signed > 0 ? "+" : signed < 0 ? "\u2212" : "") +
+      Math.abs(signed).toFixed(2);
+    const impact = n.impact === null ? "?" : n.impact.toFixed(2);
+    const meta = esc(when) + " \u00B7 " + esc(n.source) + " \u00B7 " +
+      esc(n.sentiment) + " \u00B7 " + impact + " \u00D7 " + esc(n.scope) +
+      " = <b class='" + cls + "'>" + contribution + "</b>";
+
+    const title = n.link
+      ? '<a class="ttl" href="' + esc(n.link) +
+        '" target="_blank" rel="noopener noreferrer">' + esc(n.title) + "</a>"
+      : '<span class="ttl">' + esc(n.title) + "</span>";
+
+    // Merged duplicates are shown rather than hidden: an index nobody can audit
+    // is unfalsifiable, and a silently collapsed story is exactly the sort of
+    // thing that would be impossible to spot later.
+    const badge = n.dupes > 1
+      ? '<span class="dupe" title="same event reported by other sources">\u00d7' +
+        n.dupes + "</span>"
+      : "";
+    const merged = (n.also_in && n.also_in.length)
+      ? " +" + n.also_in.length + " more source(s)"
+      : "";
+    const fullMeta = meta.replace("</b>", merged + "</b>");
+
+    return '<div class="row"><span class="ico ' + toneCls + '" title="' +
+      esc(tone || "neutral") + '">' + icon + "</span>" +
+      '<div class="ttlcell">' + title + badge + "</div>" +
+      '<span class="meta">' + fullMeta + "</span></div>";
+  }).join("");
+}
+
+function render() {
+  renderQuote(DATA);
+  renderBanner(DATA);
+  renderStats(DATA);
+  renderChart(DATA);
+  renderNews(DATA);
+  renderFooter(DATA);
+}
+
+document.getElementById("tabs").onclick = ev => {
+  const btn = ev.target.closest("button");
+  if (!btn) return;
+  WINDOW = btn.dataset.w;
+  document.querySelectorAll("#tabs button").forEach(b =>
+    b.classList.toggle("active", b === btn));
+  render();
+};
+
+(async function start() {
+  try {
+    DATA = await load();
+    render();
+    setInterval(async () => {
+      try { DATA = await load(); render(); } catch (e) { /* keep last view */ }
+    }, 60000);
+  } catch (err) {
+    document.getElementById("level").innerHTML =
+      '<span class="err">unavailable</span>';
+    document.getElementById("asof").innerHTML = '<span class="err">' +
+      esc(err.message) + "</span>";
+  }
+})();
+</script>
+</body>
+</html>
