@@ -86,6 +86,9 @@ logs/
 data/*.json
 state/*.json
 state/*.jsonl
+# state/ is host-local bookkeeping (alert throttles, fetcher de-duplication) and
+# must never be synced or committed - the README explains why.
+state/
 inbox/*.jsonl
 
 # Temporary/local fetch output
@@ -117,6 +120,8 @@ temp/
 *.db
 *.sqlite
 *.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 
 # Compiled UI or assets
 *.min.js

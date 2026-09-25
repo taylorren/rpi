@@ -24,7 +24,7 @@
 # Run nanobot learning daily at 2:00 AM
 # 0 2 * * * /home/tr/go4pro-learn/learn.sh  >> /home/tr/go4pro-learn/cron.log 2>&1
 
-# rpi-fetcher : fetch hourly at :55, five minutes ahead of the workstation's :00
+# rpi-fetcher : fetch hourly at :51, five minutes ahead of the workstation's :56
 # pull, so the pull never races the fetch. A missed run costs one hour rather
 # than a failure, since the pull tolerates a stale file.
-55 * * * * /usr/bin/python3 /home/tr/rpi/fetcher/fetch_rss.py --out /home/tr/rpi/inbox >> /home/tr/rpi/logs/fetch.log 2>&1
+51 * * * * /usr/bin/python3 /home/tr/rpi/fetcher/fetch_rss.py --out /home/tr/rpi/inbox >> /home/tr/rpi/logs/fetch.log 2>&1

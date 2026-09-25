@@ -5,9 +5,10 @@ One request per item, carrying all three questions at once (the API accepts a
 schema mapping, so there is no reason to spend three round trips).
 
 Items already analysed at the current ``schema_version`` are skipped, so this
-is incremental and safe to re-run. Failures are recorded per item and are not
-retried by default, so a permanently broken item cannot wedge the queue; pass
-``--retry-failed`` to include them.
+is incremental and safe to re-run. Failures are recorded per item and retried
+automatically a few times with a gap between attempts (the policy lives in
+``rpi.storage``); after that they are parked, so a permanently unscoreable item
+cannot wedge the queue, and ``--retry-failed`` forces one more look regardless.
 
 Requests are issued serially. The service keeps one quantized model resident in
 VRAM and serialises internally, so threading would add complexity without
@@ -83,6 +84,7 @@ def run(db_path: Path, cfg: config.RpiConfig, limit: Optional[int],
         conn.commit()
     analysed = 0
     failed = 0
+    parked = 0
     total_ms = 0.0
 
     try:
@@ -143,6 +145,10 @@ def run(db_path: Path, cfg: config.RpiConfig, limit: Optional[int],
                     "{:.2f}".format(parsed["impact_expected"])
                     if parsed["impact_expected"] is not None else "?",
                     parsed["scope"] or "?"))
+        # Parked items are invisible in the numbers above: they are neither
+        # pending nor a failure of *this* run, and no later run will pick them
+        # up. Silent omission is how the 2026-09-24 CUDA batch went unnoticed.
+        parked = storage.failed_count(conn, schema.SCHEMA_VERSION)
     finally:
         conn.close()
 
@@ -150,6 +156,10 @@ def run(db_path: Path, cfg: config.RpiConfig, limit: Optional[int],
         analysed, failed, " (dry run, nothing written)" if dry_run else ""))
     if analysed:
         print("mean latency: {:.0f} ms/item".format(total_ms / analysed))
+    if parked:
+        print("{} item(s) parked after {} failed attempt(s); no scheduled run "
+              "will retry them - use --retry-failed to force one".format(
+                  parked, storage.MAX_ANALYSIS_ATTEMPTS))
     return 0 if failed == 0 else 1
 
 
@@ -158,7 +168,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--db", type=Path, default=paths.DB_PATH)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--retry-failed", action="store_true",
-                        help="include items whose earlier analysis failed")
+                        help="retry failed items even if the automatic retry "
+                             "policy has parked them")
     parser.add_argument("--dry-run", action="store_true",
                         help="call the API but write nothing")
     parser.add_argument("--quiet", action="store_true")

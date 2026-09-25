@@ -99,15 +99,29 @@ installing — no venv, no `pip`.
 Installed as:
 
 ```cron
-55 * * * * /usr/bin/python3 /home/tr/rpi/fetcher/fetch_rss.py --out /home/tr/rpi/inbox >> /home/tr/rpi/logs/fetch.log 2>&1
+51 * * * * /usr/bin/python3 /home/tr/rpi/fetcher/fetch_rss.py --out /home/tr/rpi/inbox >> /home/tr/rpi/logs/fetch.log 2>&1
 ```
 
-### Why :55, not :00
+### Why :51, not :00
 
-The workstation runs its pipeline on the hour. Firing the fetch five minutes earlier means
-the pull always reads output from the current hour, rather than racing a fetch that started
-at the same moment. Losing that race is not fatal — the pull tolerates a stale inbox — but
-it quietly costs an hour of freshness on every run it loses, and nothing reports it.
+The workstation runs its pipeline at :56. Firing the fetch five minutes earlier means the
+pull always reads output from the current hour, rather than racing a fetch that started at
+the same moment. Losing that race is not fatal — the pull tolerates a stale inbox — but it
+quietly costs an hour of freshness on every run it loses, and nothing reports it.
+
+The fetch itself takes about three seconds (measured: cron fires 07:55:00, the inbox file
+and state are written by 07:55:03), and the workstation cycle about a minute (pull 11 s,
+pipeline 24 s, publish and live check 17 s). So a :56 start is published and verified by
+:57, and the five-minute gap in front of the pull is generous.
+
+The minute is also load-bearing for the chart, and that part is easy to undo by accident.
+The "Today" window is the current UTC day (`rpi/export.py`), and the page only draws a
+window holding two or more points. Because the snapshot grid is fifteen minutes, a run that
+lands within the first fourteen minutes of a UTC day publishes a one-point window, and the
+page shows "not enough data for this window yet" for that hour — which is what a run at :00
+did every day, since :00 Beijing is 00:00 UTC. At :56 the window holds four points, and a
+run would have to overrun by more than three minutes to land inside the new day. Keep the
+pipeline at minute 15 or later, and clear of the midnight boundary.
 
 ### Why hourly (measured, `tools/feed_cadence.py`)
 
@@ -153,13 +167,39 @@ The log grows ~3 MB/year at 24 runs a day; rotate or truncate it occasionally.
 `deploy/pull_and_run.ps1` pulls, checks freshness, then runs the pipeline. Register it:
 
 ```powershell
-schtasks /Create /TN "RPI pipeline" /SC HOURLY /MO 1 /ST 00:00 /F `
+schtasks /Create /TN "RPI pipeline" /SC HOURLY /MO 1 /ST 00:56 /F `
   /TR "powershell -NoProfile -ExecutionPolicy Bypass -File d:\programs\rpi\deploy\pull_and_run.ps1"
 ```
 
 Run it manually to test: `powershell -NoProfile -ExecutionPolicy Bypass -File deploy\pull_and_run.ps1`
 
 Remove it with: `schtasks /Delete /TN "RPI pipeline" /F`
+
+### Cap the run time
+
+`schtasks` cannot set a run-time limit, so it is applied separately - and it is
+not optional here. Task Scheduler refuses to start a second instance of a running
+task (`MultipleInstances = IgnoreNew`), so one hung cycle silently cancels the
+next: measured 2026-09-24, a publish stuck on a dead SSH connection for 2 h 11 min
+and the 13:56 and 14:56 cycles never ran at all. The script kills its own pull and
+publish at 120 s and 180 s (`-PullTimeoutSeconds`, `-PublishTimeoutSeconds`); this
+limit is the backstop for anything else that hangs.
+
+```powershell
+$t = Get-ScheduledTask -TaskName "RPI pipeline"
+$t.Settings.ExecutionTimeLimit = 'PT30M'
+Set-ScheduledTask -TaskName "RPI pipeline" -Settings $t.Settings
+```
+
+30 minutes is ten times the longest healthy cycle, so it leaves room for a
+catch-up run after an outage while still freeing the slot well before the next
+hour.
+
+`StartWhenAvailable` is deliberately left off: replaying a missed start whenever
+the machine comes back would run the pipeline at an arbitrary minute, and the
+minute is load-bearing (see "Why :51, not :00"). Whatever was missed is picked up
+by the next scheduled cycle regardless, because ingestion is idempotent and the
+inbox only accumulates.
 
 ## Publishing the UI
 
@@ -223,15 +263,28 @@ error is the expected outcome when only the default server answers.
 | --- | --- |
 | VPS unreachable | pull logged as WARN; pipeline still runs on existing data |
 | VPS cron dead | logged as WARN *and* alerted once the freshest `fetched_at` is > 150 min old (2.5 cycles) |
-| Scoring service down | analysis skipped, index rebuilt from stored scores |
+| Scoring service down | analysis skipped, index rebuilt from stored scores; the backlog stays in the export, so the health check alerts |
+| An item fails to score | recorded per item and retried automatically after 30 min, up to 3 attempts; then *parked* and alerted as its own condition |
+| Pull or publish hangs | killed at its own deadline (120 s and 180 s), logged as WARN; the cycle still finishes and the next one runs |
 | Fetcher emits nothing | normal; ingestion is idempotent and finds no new items |
 | Publish fails | logged as WARN; the local chart is still correct and the next cycle retries |
 
 Nothing fails silently, which matters because every stage is quiet on success.
 
+The two ways an item can be missing are published separately, because they need
+different responses: `summary.pending` is work the analyser is expected to
+consume (a number that does not fall means the service is stuck), while
+`summary.failed` is work the retry policy has given up on and which only
+`run_once.py --retry-failed` will attempt again. Folding the second into the
+first is exactly what made the backlog permanently non-zero after the
+2026-09-24 CUDA fault, which turned the health check into noise.
+
 Alerts are throttled per alert type, one `state/last-alert-<key>.txt` each, so a condition
 that persists notifies once every 6 hours without a second, unrelated problem being
-swallowed behind it. The staleness check needs this to be meaningful: if the fetcher dies,
+swallowed behind it. Those stamps, and the lines in `logs/alerts.log`, are UTC: the throttle
+arithmetic is UTC-to-UTC, and a stamp in the future is treated as expired, so a clock change
+can cost an extra alert but never hours of silence. The staleness check needs this to be
+meaningful: if the fetcher dies,
 nothing is left pending, so the scoring-service health check stays silent and the stale
 inbox would otherwise be the only trace.
 

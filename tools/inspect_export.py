@@ -43,6 +43,8 @@ def main(argv=None) -> int:
         stats["level"], stats["change"], stats["change_pct"]))
     print("analysed    : {} item(s), {} in last 24h".format(
         stats["volume_total"], stats["volume_24h"]))
+    print("backlog     : {} waiting to be analysed, {} parked after repeated "
+          "failures".format(stats.get("pending", 0), stats.get("failed", 0)))
     print("base_level  : {:.3f}".format(base))
     print()
 

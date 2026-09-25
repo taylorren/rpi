@@ -9,7 +9,8 @@
          network access) into the local inbox,
       2. warns if the freshest item in the inbox is stale, which is the symptom
          of a dead fetcher on the VPS rather than a local fault,
-      3. runs the pipeline (ingest -> dedupe -> analyse -> calculate -> export).
+      3. runs the pipeline (ingest -> dedupe -> analyse -> calculate -> export),
+      4. publishes the static page back to the VPS and verifies it.
 
     Design notes:
 
@@ -21,6 +22,10 @@
       would be suppressed.
     * Absolute paths throughout: Task Scheduler starts with a different
       working directory and environment than an interactive shell.
+    * Every external command has a hard deadline. Measured 2026-09-24: one
+      publish blocked for 2 h 11 min on a stalled SSH connection, and because
+      Task Scheduler will not start a second instance of a running task, the
+      following two hourly cycles never ran at all.
 
 .PARAMETER SkipPull
     Run the pipeline only, without contacting the VPS.
@@ -32,12 +37,21 @@
     Warn if the newest inbox file is older than this. Default 150, i.e. 2.5 missed
     hourly cycles. Must stay comfortably above the fetch interval or it will warn
     on every run - it was 45 when the schedule was every 15 minutes.
+
+.PARAMETER PullTimeoutSeconds
+    Deadline for the inbox copy. Default 120 s, against a measured ~11 s.
+
+.PARAMETER PublishTimeoutSeconds
+    Deadline for the whole publish step, including its scp calls. Default 180 s,
+    against a measured ~17 s.
 #>
 [CmdletBinding()]
 param(
     [switch] $SkipPull,
     [switch] $SkipPublish,
-    [int]    $StaleMinutes = 150
+    [int]    $StaleMinutes = 150,
+    [int]    $PullTimeoutSeconds = 120,
+    [int]    $PublishTimeoutSeconds = 180
 )
 
 $ErrorActionPreference = 'Continue'
@@ -104,6 +118,17 @@ try {
 # append-only alert log that still records the problem if the toast cannot be
 # shown. Repeats are throttled so a condition that persists does not notify
 # every single hour.
+#
+# Timestamps here are UTC, tagged "Z", and that is not cosmetic. The first
+# version wrote local time with a "Z" and read it back with [datetime]::Parse,
+# which converts a trailing "Z" to local time - so the age came out negative
+# ("alert throttled; last sent 2026-09-25 14:59:37Z (-7.0h ago)" in
+# logs/pipeline-2026-09-25.log), the window became 6 h plus the UTC offset (14 h
+# here), and every alert raised in its first 8 hours was swallowed. RoundtripKind
+# and ToUniversalTime keep both sides of the comparison in UTC, and a stamp in
+# the future - a clock change, or a leftover written in the old format - is
+# treated as expired rather than trusted, so the failure mode is one extra alert
+# instead of hours of silence.
 # ---------------------------------------------------------------------------
 $AlertEveryHours = 6
 $alertDir = Join-Path $ProjectRoot 'state'
@@ -122,18 +147,35 @@ function Send-Alert {
     if (Test-Path $alertState) {
         $raw = (Get-Content $alertState -Raw -ErrorAction SilentlyContinue)
         if ($raw) { $raw = $raw.Trim() }
-        if ($raw) { try { $previous = [datetime]::Parse($raw) } catch { $previous = $null } }
+        if ($raw) {
+            # InvariantCulture because a scheduled task does not inherit an
+            # interactive shell's culture; RoundtripKind so the trailing "Z"
+            # stays UTC instead of being converted to local time (see above).
+            try {
+                $previous = [datetime]::Parse($raw,
+                    [Globalization.CultureInfo]::InvariantCulture,
+                    [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+            } catch { $previous = $null }
+        }
     }
-    if ($previous -and ((Get-Date) - $previous).TotalHours -lt $AlertEveryHours) {
-        Write-Log ("alert throttled; last sent {0:u} ({1:N1}h ago)" -f `
-                   $previous, ((Get-Date) - $previous).TotalHours) 'WARN'
+    # Throttle on a UTC-to-UTC age. A negative age is not "recently sent" - it
+    # means the stored stamp is in the future - so it deliberately falls through
+    # to the alert rather than suppressing it.
+    $ageHours = $null
+    if ($previous) {
+        $ageHours = ((Get-Date).ToUniversalTime() - $previous).TotalHours
+    }
+    if ($null -ne $ageHours -and $ageHours -ge 0 -and
+        $ageHours -lt $AlertEveryHours) {
+        Write-Log ("alert throttled; last sent {0} ({1:N1}h ago)" -f `
+                   $previous.ToString('u'), $ageHours) 'WARN'
         return
     }
 
     New-Item -ItemType Directory -Force -Path $alertDir,
         (Split-Path -Parent $alertLog) | Out-Null
-    Add-Content -Path $alertLog -Value ('{0:u}  {1}  {2}' -f (Get-Date), $Title, $Message)
-    [System.IO.File]::WriteAllText($alertState, (Get-Date).ToString('u'))
+    Add-Content -Path $alertLog -Value ('{0:u}  {1}  {2}' -f (Get-Date).ToUniversalTime(), $Title, $Message)
+    [System.IO.File]::WriteAllText($alertState, (Get-Date).ToUniversalTime().ToString('u'))
 
     try {
         [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
@@ -153,6 +195,94 @@ function Send-Alert {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Bounded external commands
+#
+# ssh and scp can hang indefinitely on a connection that is alive at the TCP
+# level but stuck above it: ServerAliveInterval keeps such a channel alive
+# rather than abandoning it, and ConnectTimeout only guards the handshake.
+# Measured 2026-09-24: a publish blocked for 2 h 11 min on exactly that, and
+# because Task Scheduler refuses to start a second instance of a running task,
+# the 13:56 and 14:56 cycles never ran at all. So every external command gets a
+# deadline, and a timeout is treated as an ordinary failure: the pipeline is
+# local and still produces a correct chart.
+# ---------------------------------------------------------------------------
+
+function ConvertTo-ArgumentToken {
+    # CreateProcess parses a single command-line string, so an argument holding a
+    # space has to be quoted the way the C runtime expects - otherwise a path
+    # like "C:\Program Files\..." arrives as two arguments.
+    param([string] $Value)
+    if ($Value -eq '') { return '""' }
+    if ($Value -notmatch '[\s"]') { return $Value }
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append('"')
+    $backslashes = 0
+    foreach ($ch in $Value.ToCharArray()) {
+        if ($ch -eq '\') { $backslashes++; continue }
+        if ($ch -eq '"') {
+            [void]$sb.Append('\' * ($backslashes * 2 + 1))
+            [void]$sb.Append('"')
+            $backslashes = 0
+            continue
+        }
+        if ($backslashes) {
+            [void]$sb.Append('\' * $backslashes)
+            $backslashes = 0
+        }
+        [void]$sb.Append($ch)
+    }
+    if ($backslashes) { [void]$sb.Append('\' * ($backslashes * 2)) }
+    [void]$sb.Append('"')
+    return $sb.ToString()
+}
+
+function Invoke-WithTimeout {
+    param(
+        [string]   $FilePath,
+        [string[]] $ArgumentList,
+        [int]      $TimeoutSeconds,
+        [string]   $Label
+    )
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName  = $FilePath
+    $psi.Arguments = (($ArgumentList |
+        ForEach-Object { ConvertTo-ArgumentToken $_ }) -join ' ')
+    $psi.UseShellExecute        = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError  = $true
+    $psi.CreateNoWindow         = $true
+
+    $process = [System.Diagnostics.Process]::Start($psi)
+    # Drain both pipes before waiting. A transfer progress meter overruns the
+    # 4 KB pipe buffer easily, and a full pipe would deadlock the child against a
+    # parent still waiting for it to exit.
+    $stdout = $process.StandardOutput.ReadToEndAsync()
+    $stderr = $process.StandardError.ReadToEndAsync()
+
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        try { $process.Kill() } catch { }
+        # Kill() ends the child, not a grandchild it spawned; taskkill /T sweeps
+        # up whatever ssh or scp left behind. Harmless if it is already gone.
+        try { & taskkill /T /F /PID $process.Id 2>&1 | Out-Null } catch { }
+        Write-Log "$Label did not finish within ${TimeoutSeconds}s - killed it" 'WARN'
+        return [pscustomobject]@{ TimedOut = $true; ExitCode = $null; Output = @() }
+    }
+
+    $lines = @()
+    foreach ($text in @($stdout.Result, $stderr.Result)) {
+        if ($text) {
+            $lines += @(($text -split "`r?`n") | Where-Object { $_ -ne '' })
+        }
+    }
+    return [pscustomobject]@{
+        TimedOut = $false
+        ExitCode = $process.ExitCode
+        Output   = $lines
+    }
+}
+
 Write-Log '--- run start ---'
 
 # ---------------------------------------------------------------------------
@@ -164,16 +294,21 @@ if (-not $SkipPull) {
     # minutes on every successful run.
     #
     # ServerAliveInterval/CountMax detect a stalled connection that ConnectTimeout
-    # alone cannot: ConnectTimeout only guards the initial handshake, not a transfer
-    # that stalls halfway through. 10s interval x 3 misses = 30s to bail out.
-    $pullOutput = & scp -p -o BatchMode=yes -o ConnectTimeout=20 `
-        -o ServerAliveInterval=10 -o ServerAliveCountMax=3 `
-        "${SshHost}:rpi/inbox/*.jsonl" $InboxDir 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Log "pull from ${SshHost} FAILED (exit $LASTEXITCODE): $pullOutput" 'WARN'
+    # alone cannot, but only when the peer is genuinely dead - a live-but-stuck
+    # channel is kept alive, which is why this call carries a deadline too.
+    $pull = Invoke-WithTimeout -FilePath 'scp' -Label 'pull' `
+        -TimeoutSeconds $PullTimeoutSeconds -ArgumentList @(
+            '-p', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=20',
+            '-o', 'ServerAliveInterval=10', '-o', 'ServerAliveCountMax=3',
+            "${SshHost}:rpi/inbox/*.jsonl", $InboxDir)
+    $pullText = ($pull.Output -join ' ')
+    if ($pull.TimedOut) {
+        Write-Log 'continuing with whatever is already in the inbox' 'WARN'
+    } elseif ($pull.ExitCode -ne 0) {
+        Write-Log "pull from ${SshHost} FAILED (exit $($pull.ExitCode)): $pullText" 'WARN'
         Write-Log 'continuing with whatever is already in the inbox' 'WARN'
     } else {
-        Write-Log "pull ok: $pullOutput"
+        Write-Log "pull ok: $pullText"
     }
 }
 
@@ -291,12 +426,26 @@ if (Test-Path $exportPath) {
         # A health check that cannot fail loudly is worse than none, hence UTF-8.
         $export = [System.IO.File]::ReadAllText($exportPath,
             [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        # Waiting work means the analyser did not consume what was there, which
+        # after a run that had the chance to is the signature of a scoring
+        # service that is down or stuck. The gauge excludes items parked by the
+        # retry policy, so this can reach zero on a healthy system and mean
+        # something when it does not.
         $pending = [int]$export.summary.pending
         if ($pending -gt 0) {
             Send-Alert -Title 'RPI: scoring service appears offline' `
                 -Message ("{0} item(s) waiting to be analysed. The index is frozen and will not reflect them." -f $pending)
         } else {
             Write-Log "health ok: no analysis backlog"
+        }
+        # Separate condition, separate alert type and throttle: these items are
+        # missing from the index for good unless someone forces a retry, so
+        # folding them into the backlog above (where they cannot change) is how
+        # the 2026-09-24 CUDA batch went unreported.
+        $parked = [int]$export.summary.failed
+        if ($parked -gt 0) {
+            Send-Alert -Title 'RPI: items failed to score' `
+                -Message ("{0} item(s) failed to score and are missing from the index. They will not be retried again unless run_once.py --retry-failed is used." -f $parked)
         }
     } catch {
         # ConvertFrom-Json quotes the offending input back at you, which for this
@@ -322,11 +471,17 @@ if (Test-Path $exportPath) {
 # ---------------------------------------------------------------------------
 if (-not $SkipPublish) {
     $publishScript = Join-Path $PSScriptRoot 'publish_ui.ps1'
-    $publishOutput = & powershell -NoProfile -ExecutionPolicy Bypass `
-        -File $publishScript -Verify 2>&1
-    $publishOutput | ForEach-Object { Write-Log "  $_" }
-    if ($LASTEXITCODE -ne 0) {
-        Write-Log "publish exited $LASTEXITCODE" 'WARN'
+    # The deadline covers the whole step, including the ssh and scp calls inside
+    # publish_ui.ps1 - the hang measured on 2026-09-24 was one of those.
+    $publish = Invoke-WithTimeout -FilePath 'powershell' -Label 'publish' `
+        -TimeoutSeconds $PublishTimeoutSeconds -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $publishScript,
+            '-Verify')
+    $publish.Output | ForEach-Object { Write-Log "  $_" }
+    if ($publish.TimedOut) {
+        Write-Log 'the local chart is still correct; the next cycle retries' 'WARN'
+    } elseif ($publish.ExitCode -ne 0) {
+        Write-Log "publish exited $($publish.ExitCode)" 'WARN'
     }
 } else {
     Write-Log 'publish skipped (-SkipPublish)'

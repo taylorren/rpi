@@ -267,10 +267,20 @@ function renderBanner(d) {
       "frozen from accumulated analyses.");
   }
 
+  // Two different problems, deliberately kept apart: "waiting" is a queue the
+  // analyser is expected to drain during its own run, so seeing it here means
+  // that run could not; "failed" is work the retry policy has given up on,
+  // which no later run will pick up on its own.
   const pending = d.summary.pending || 0;
   if (pending > 0) {
     msgs.push(pending + " item(s) are waiting to be analysed - the scoring " +
-      "service may be offline. The index will not reflect them until it returns.");
+      "service may be offline. The index does not reflect them yet.");
+  }
+
+  const failed = d.summary.failed || 0;
+  if (failed > 0) {
+    msgs.push(failed + " item(s) failed to score and are missing from the " +
+      "index. Nothing retries them unless the analyst forces it.");
   }
 
   if (d.meta.last_analysis) {

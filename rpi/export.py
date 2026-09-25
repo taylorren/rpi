@@ -213,6 +213,11 @@ def build_payload(conn: Any, cfg: config_mod.RpiConfig, schema_version: int,
     # service that has stopped consuming work, which every other stage would
     # hide by continuing to succeed.
     stats["pending"] = storage.pending_count(conn, schema_version)
+    # Parked failures are a different problem with a different fix, so they are
+    # published separately rather than folded into the backlog - folding them in
+    # is what kept the backlog permanently non-zero after the 2026-09-24 CUDA
+    # fault, which turned the health check into background noise.
+    stats["failed"] = storage.failed_count(conn, schema_version)
 
     item_times = [item.ts for item in items]
 

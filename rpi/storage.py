@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -228,10 +228,54 @@ def upsert_items(conn: sqlite3.Connection,
 # analysis
 # --------------------------------------------------------------------------- #
 
+# Retry policy for failed analyses.
+#
+# Measured 2026-09-24: one CUDA fault failed 33 items in a single batch - 21 of
+# them cluster representatives - and because failures were never retried those
+# stories were excluded from the index from that moment on, silently: the error
+# was recorded, the index was not, and no run would ever pick them up again.
+# Per-item durability is the point of storing an error row at all, so a failure
+# is a delay rather than a verdict, and the cap exists so a genuinely
+# unscoreable item cannot re-enter the queue forever either.
+#
+# Three attempts, at least this far apart. After that the item is *parked*: out
+# of the normal queue, counted by ``failed_count`` instead of inflating the
+# backlog, and recoverable only with ``--retry-failed`` (or when the schema
+# version changes, which re-queues everything).
+MAX_ANALYSIS_ATTEMPTS = 3
+ANALYSIS_RETRY_MINUTES = 30
+
+
+def _iso_minutes_ago(minutes: float) -> str:
+    """A UTC stamp in :func:`utcnow_iso`'s format, backdated.
+
+    The same format is load-bearing: ``last_attempt`` is compared against it as
+    a string, which is only valid while both are fixed-width ISO stamps.
+    """
+    moment = (datetime.now(timezone.utc).replace(microsecond=0)
+              - timedelta(minutes=minutes))
+    return moment.isoformat().replace("+00:00", "Z")
+
+
+def _representative_without_analysis() -> str:
+    """SQL for "a cluster representative still missing its analysis".
+
+    One definition, shared by the work queue and both gauges, because the queue
+    and the backlog gauge disagreeing is exactly how a permanently stuck backlog
+    stayed invisible: 21 items parked by a CUDA fault kept the number non-zero
+    while the analyser was idle and healthy, so the one health signal the system
+    has was permanently useless and got throttled into background noise.
+    """
+    return ("NOT EXISTS (SELECT 1 FROM analyses a\n"
+            "                  WHERE a.item_id = i.id AND a.schema_version = ?)\n"
+            "AND NOT EXISTS (SELECT 1 FROM cluster_members m\n"
+            "                WHERE m.item_id = i.id AND m.is_representative = 0)")
+
+
 def pending_items(conn: sqlite3.Connection, schema_version: int,
                   limit: Optional[int] = None,
                   retry_failed: bool = False) -> List[sqlite3.Row]:
-    """Items with no analysis at this schema version, oldest published first.
+    """Items worth a model call now, oldest published first.
 
     Age ordering matters: news is a time series, and analysing oldest-first
     keeps partial runs chronologically coherent.
@@ -239,19 +283,26 @@ def pending_items(conn: sqlite3.Connection, schema_version: int,
     Items already known to be duplicates are skipped, so a story covered by six
     outlets costs one analysis rather than six. Items that have not been
     clustered yet are treated as representatives and are analysed.
+
+    A previous failure is a delay, not a verdict: an item comes back once
+    ``ANALYSIS_RETRY_MINUTES`` have passed since its last attempt, up to
+    ``MAX_ANALYSIS_ATTEMPTS`` attempts, and is then parked. ``retry_failed=True``
+    offers every failed item regardless of the policy - for a deliberate second
+    look, e.g. straight after fixing the scoring service.
     """
     sql = [
-        "SELECT i.* FROM items i",
-        "WHERE NOT EXISTS (SELECT 1 FROM analyses a",
-        "                  WHERE a.item_id = i.id AND a.schema_version = ?)",
-        "AND NOT EXISTS (SELECT 1 FROM cluster_members m",
-        "                WHERE m.item_id = i.id AND m.is_representative = 0)",
+        "SELECT i.* FROM items i WHERE " + _representative_without_analysis(),
     ]
     params: List[Any] = [schema_version]
     if not retry_failed:
-        sql.append("AND NOT EXISTS (SELECT 1 FROM analysis_errors e")
-        sql.append("                WHERE e.item_id = i.id AND e.schema_version = ?)")
-        params.append(schema_version)
+        sql.append("AND (NOT EXISTS (SELECT 1 FROM analysis_errors e")
+        sql.append("                  WHERE e.item_id = i.id AND e.schema_version = ?)")
+        sql.append("     OR EXISTS (SELECT 1 FROM analysis_errors e")
+        sql.append("               WHERE e.item_id = i.id AND e.schema_version = ?")
+        sql.append("                 AND e.attempts < ? AND e.last_attempt <= ?))")
+        params.extend([schema_version, schema_version,
+                       MAX_ANALYSIS_ATTEMPTS,
+                       _iso_minutes_ago(ANALYSIS_RETRY_MINUTES)])
     sql.append("ORDER BY COALESCE(i.published, i.fetched_at) ASC, i.id ASC")
     if limit is not None:
         sql.append("LIMIT ?")
@@ -303,19 +354,49 @@ def record_analysis_error(conn: sqlite3.Connection, item_id: str,
 
 
 def pending_count(conn: sqlite3.Connection, schema_version: int) -> int:
-    """Representatives still awaiting analysis.
+    """Representatives awaiting analysis that the retry policy has not given up on.
 
-    This is the backlog gauge. A number that keeps growing means the scoring
-    service is not consuming work - the one failure that would otherwise be
-    invisible, because every other stage keeps succeeding around it.
+    This is the backlog gauge the health check and the page's banner read: it
+    counts work the analyser is expected to consume, including a failure that is
+    still inside its retry window. A number that keeps growing therefore means
+    the scoring service is not consuming work - the one failure every other stage
+    would hide by continuing to succeed.
+
+    Parked items are deliberately *not* counted here; they are reported by
+    :func:`failed_count`, so the invariant is::
+
+        pending_count + failed_count == representatives with no analysis
+
+    Before the two were defined together this gauge included parked items, so it
+    could never fall to zero after a transient fault and the alert fired daily
+    against a perfectly healthy analyser.
     """
     row = conn.execute(
-        "SELECT COUNT(*) AS n FROM items i"
-        " WHERE NOT EXISTS (SELECT 1 FROM analyses a"
-        "                   WHERE a.item_id = i.id AND a.schema_version = ?)"
-        "   AND NOT EXISTS (SELECT 1 FROM cluster_members m"
-        "                   WHERE m.item_id = i.id AND m.is_representative = 0)",
-        (schema_version,)).fetchone()
+        "SELECT COUNT(*) AS n FROM items i WHERE "
+        + _representative_without_analysis()
+        + "\nAND NOT EXISTS (SELECT 1 FROM analysis_errors e"
+          "  WHERE e.item_id = i.id AND e.schema_version = ?"
+          "  AND e.attempts >= ?)",
+        (schema_version, schema_version, MAX_ANALYSIS_ATTEMPTS)).fetchone()
+    return int(row["n"]) if row else 0
+
+
+def failed_count(conn: sqlite3.Connection, schema_version: int) -> int:
+    """Representatives parked after exhausting the analysis retry policy.
+
+    These are missing from the index and no scheduled run will pick them up
+    again, so they are worth saying out loud rather than folding into the
+    backlog: the fix is either ``--retry-failed`` or accepting the loss. Scoped
+    to representatives, matching :func:`pending_count`, because a duplicate
+    member is never analysed and its failure says nothing about the index.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM items i WHERE "
+        + _representative_without_analysis()
+        + "\nAND EXISTS (SELECT 1 FROM analysis_errors e"
+          "  WHERE e.item_id = i.id AND e.schema_version = ?"
+          "  AND e.attempts >= ?)",
+        (schema_version, schema_version, MAX_ANALYSIS_ATTEMPTS)).fetchone()
     return int(row["n"]) if row else 0
 
 

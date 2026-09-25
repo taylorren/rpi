@@ -44,7 +44,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--skip-dedupe", action="store_true")
     parser.add_argument("--skip-analyse", action="store_true")
     parser.add_argument("--skip-calculate", action="store_true")
-    parser.add_argument("--retry-failed", action="store_true")
+    parser.add_argument("--retry-failed", action="store_true",
+                        help="retry failed items even if the automatic retry "
+                             "policy has parked them")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
