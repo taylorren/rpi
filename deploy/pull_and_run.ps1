@@ -61,6 +61,18 @@ $ErrorActionPreference = 'Continue'
 # ---------------------------------------------------------------------------
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $PythonExe   = Join-Path $env:LOCALAPPDATA 'Programs\Python\Python314\python.exe'
+# Full paths, never the bare names "pwsh" / "powershell". Those are two different
+# products, not two versions of one: "powershell" is Windows PowerShell 5.1, a
+# frozen OS component under System32\WindowsPowerShell\v1.0, and "pwsh" is
+# PowerShell 7.x from a separate install. Installing 7.x does not move the
+# "powershell" name, so a task registered as "powershell" keeps running 5.1
+# forever without saying so - which is exactly what had been happening here. The
+# full path also removes PATH from the equation, and the scheduled task inherits
+# a different environment from an interactive shell.
+$PwshExe     = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
+# The in-box Windows PowerShell, used only to raise a toast. WinRT cannot be
+# loaded by PowerShell 7.x; the measurement is in deploy/toast.ps1.
+$WinPsExe    = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $SshHost     = 'go4pro'          # alias from ~/.ssh/config (port 22220, user tr)
 $InboxDir    = Join-Path $ProjectRoot 'inbox'
 $LogDir      = Join-Path $ProjectRoot 'logs'
@@ -69,8 +81,8 @@ $logFile = Join-Path $LogDir ('pipeline-{0:yyyy-MM-dd}.log' -f (Get-Date))
 New-Item -ItemType Directory -Force -Path $LogDir, $InboxDir | Out-Null
 
 # Written through .NET rather than Add-Content, whose default encoding depends on
-# the host. Measured: under Windows PowerShell (which the scheduled task uses)
-# Add-Content writes the ANSI codepage and a zero-width space - which Guardian
+# the host. Measured: under Windows PowerShell 5.1 Add-Content writes the ANSI
+# codepage and a zero-width space - which Guardian
 # headlines are full of - becomes a literal "?"; PowerShell 7 writes UTF-8.
 # Pinning it here makes the log byte-identical whichever host runs it.
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -87,6 +99,14 @@ if (-not (Test-Path $PythonExe)) {
     exit 2
 }
 
+# Fail loudly rather than falling back to whatever "powershell" happens to mean.
+# The publish step runs through PowerShell 7; if it is missing, the honest
+# outcome is a clear message, not a cycle that quietly runs on 5.1 and looks fine.
+if (-not (Test-Path $PwshExe)) {
+    Write-Log "PowerShell 7 not found at $PwshExe - see the PowerShell section of deploy/README.md" 'ERROR'
+    exit 2
+}
+
 # Belt and braces alongside rpi/__init__.py's stream reconfiguration. Without
 # this, a headline containing an unusual character crashes the run with a
 # UnicodeEncodeError under a legacy console codepage (GBK here).
@@ -99,10 +119,10 @@ $env:PYTHONIOENCODING = 'utf-8'
 # defaults to this; 5.1 does not. A console-less process - which is how the
 # scheduled task runs - can refuse the set.
 #
-# This is not a complete fix, and is not claimed as one. 5.1 has still been
-# observed mangling the decode with this pinned, while the scheduled task's own
-# output was correct. So a mojibake headline in the log remains possible; it
-# affects the log only and never the data, which is UTF-8 end to end.
+# Kept even though the scheduled task now runs PowerShell 7, where this is a
+# no-op: the script is still runnable by hand under 5.1, and it was 5.1 that
+# mangled the decode. Removing it would quietly re-arm a bug on any host that is
+# not 7.
 try {
     [Console]::OutputEncoding = [Text.Encoding]::UTF8
 } catch {
@@ -178,18 +198,41 @@ function Send-Alert {
     [System.IO.File]::WriteAllText($alertState, (Get-Date).ToUniversalTime().ToString('u'))
 
     try {
-        [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
-        [void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]
-        $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
-        $xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text>' +
-                     $Title + '</text><text>' + $Message + '</text>' +
-                     '</binding></visual></toast>')
-        $toast = New-Object Windows.UI.Notifications.ToastNotification $xml
-        # PowerShell's own AppID; a toast from an unregistered AppID is dropped
-        # silently, which is why the alert log exists as a fallback.
-        $appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
-        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast)
-        Write-Log "ALERT sent: $Title - $Message" 'WARN'
+        # Raised through the in-box Windows PowerShell rather than the current
+        # host. WinRT - which ToastNotificationManager needs - cannot be loaded by
+        # PowerShell 7.x at all (the measurement is in deploy/toast.ps1), so doing
+        # this in-process works under 5.1 and silently does nothing under 7. One
+        # delegated path means the alert behaves the same whichever host runs the
+        # pipeline, and there is one behaviour to test instead of two.
+        #
+        # Bounded like every other external command: a stuck toast must not hold
+        # the cycle open. Alerting is also best-effort by design - the alert has
+        # already been appended to the log above, so a toast that fails costs the
+        # popup, never the record.
+        $toastScript = Join-Path $PSScriptRoot 'toast.ps1'
+        if (-not (Test-Path $WinPsExe) -or -not (Test-Path $toastScript)) {
+            Write-Log "toast unavailable (missing $WinPsExe or $toastScript) - alert recorded in logs\alerts.log" 'WARN'
+            return
+        }
+        # Environment variables, not arguments: the message carries parentheses, a
+        # timestamp and a full stop, and quoting that for CreateProcess and for
+        # PowerShell at once is how an alert gets silently mangled.
+        $env:RPI_TOAST_TITLE = $Title
+        $env:RPI_TOAST_MESSAGE = $Message
+        $toast = Invoke-WithTimeout -FilePath $WinPsExe -Label 'toast' `
+            -TimeoutSeconds 30 -ArgumentList @(
+                '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                '-File', $toastScript)
+        # Cleared so a later alert cannot inherit a stale title or body.
+        Remove-Item Env:\RPI_TOAST_TITLE, Env:\RPI_TOAST_MESSAGE -ErrorAction SilentlyContinue
+
+        if ($toast.TimedOut) {
+            Write-Log 'toast did not finish within 30s - alert recorded in logs\alerts.log' 'WARN'
+        } elseif ($toast.ExitCode -ne 0) {
+            Write-Log "toast unavailable ($($toast.Output -join ' ')) - alert recorded in logs\alerts.log" 'WARN'
+        } else {
+            Write-Log "ALERT sent: $Title - $Message" 'WARN'
+        }
     } catch {
         Write-Log "toast unavailable ($($_.Exception.Message)) - alert recorded in logs\alerts.log" 'WARN'
     }
@@ -285,6 +328,14 @@ function Invoke-WithTimeout {
 
 Write-Log '--- run start ---'
 
+# The host is recorded every cycle, because it is not obvious and the difference
+# is invisible otherwise. "powershell" and "pwsh" are two different products, not
+# two versions of one, so a task registered years ago against "powershell" keeps
+# running 5.1 while a PowerShell 7 install sits unused beside it. That went
+# unnoticed here until it mattered. This line would have shown it immediately.
+Write-Log ("host: PowerShell {0} ({1})" -f $PSVersionTable.PSVersion,
+           [System.Diagnostics.Process]::GetCurrentProcess().Path)
+
 # ---------------------------------------------------------------------------
 # 1. Pull from the VPS
 # ---------------------------------------------------------------------------
@@ -296,19 +347,91 @@ if (-not $SkipPull) {
     # ServerAliveInterval/CountMax detect a stalled connection that ConnectTimeout
     # alone cannot, but only when the peer is genuinely dead - a live-but-stuck
     # channel is kept alive, which is why this call carries a deadline too.
-    $pull = Invoke-WithTimeout -FilePath 'scp' -Label 'pull' `
-        -TimeoutSeconds $PullTimeoutSeconds -ArgumentList @(
-            '-p', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=20',
-            '-o', 'ServerAliveInterval=10', '-o', 'ServerAliveCountMax=3',
-            "${SshHost}:rpi/inbox/*.jsonl", $InboxDir)
-    $pullText = ($pull.Output -join ' ')
-    if ($pull.TimedOut) {
+    #
+    # The transfer is incremental, not a wildcard. Measured 2026-09-29: a plain
+    # `scp 'host:inbox/*.jsonl'` re-sent the whole retained history (7 files,
+    # 1.7 MB) every hour and took ~300 s, overrunning the 120 s deadline on every
+    # cycle, so the index froze while the fetcher on the VPS was healthy and
+    # writing the whole time. The deadline was doing its job; the work it was
+    # timing out on was pointless. The fetcher only ever appends to the file for
+    # the current UTC day, so asking the VPS which files are missing or newer
+    # transfers at most one ~80 KB file per run.
+    #
+    # Comparison is on size *and* mtime. Size alone is not enough: the fetcher
+    # appends within a day, so a file can be the same length as the copy already
+    # held only by coincidence, and mtime alone is unreliable at 1-second
+    # granularity across two clocks. Both together are what -p then reproduces
+    # locally, so a file skipped here is genuinely identical to the one held.
+    #
+    # No quoting inside the remote command: the arguments are joined into one
+    # CreateProcess command line, and a run of quotes does not survive that
+    # reliably. Inbox names are YYYY-MM-DD.jsonl, so there is nothing to quote.
+    $listArgs = @(
+        '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=20', $SshHost,
+        'cd ~/rpi/inbox && for f in *.jsonl; do echo $f $(stat -c %s $f) $(stat -c %Y $f); done')
+
+    $remote = Invoke-WithTimeout -FilePath 'ssh' -Label 'list inbox' `
+        -TimeoutSeconds $PullTimeoutSeconds -ArgumentList $listArgs
+
+    if ($remote.TimedOut) {
+        Write-Log 'could not list the remote inbox; skipping the pull' 'WARN'
         Write-Log 'continuing with whatever is already in the inbox' 'WARN'
-    } elseif ($pull.ExitCode -ne 0) {
-        Write-Log "pull from ${SshHost} FAILED (exit $($pull.ExitCode)): $pullText" 'WARN'
+    } elseif ($remote.ExitCode -ne 0) {
+        Write-Log "listing the remote inbox FAILED (exit $($remote.ExitCode)): $($remote.Output -join ' ')" 'WARN'
         Write-Log 'continuing with whatever is already in the inbox' 'WARN'
     } else {
-        Write-Log "pull ok: $pullText"
+        # [datetime]::UnixEpoch does not exist in Windows PowerShell 5.1, which is
+        # what the scheduled task runs under - it arrived in .NET Core 2.1. Using it
+        # silently yielded $null, every comparison failed, and every file was
+        # re-pulled: the exact behaviour this step exists to avoid. Built from
+        # parts instead, and pinned to UTC so no local offset enters the maths.
+        $epoch = New-Object DateTime 1970, 1, 1, 0, 0, 0, ([DateTimeKind]::Utc)
+
+        $wanted = @()
+        foreach ($line in $remote.Output) {
+            $fields = ($line -split '\s+') | Where-Object { $_ -ne '' }
+            if ($fields.Count -lt 3) { continue }
+            $name  = $fields[0]
+            $size  = $fields[1]
+            $mtime = $fields[2]
+            $local = Join-Path $InboxDir $name
+            if (Test-Path $local) {
+                $info = Get-Item $local
+                # Compare as a count of seconds since the epoch, so the remote
+                # Unix stamp and the local UTC stamp are the same number and no
+                # timezone conversion happens on either side.
+                $localEpoch = [int64](($info.LastWriteTimeUtc - $epoch).TotalSeconds)
+                if ([int64]$size -eq $info.Length -and
+                    [int64]$mtime -eq $localEpoch) {
+                    continue  # already held, byte for byte
+                }
+            }
+            # Carried as an object, not a bare name: a bare name left $size
+            # pointing at the last file of the listing, so the transfer log
+            # reported every file with the same wrong "before" size.
+            $wanted += [pscustomobject]@{ Name = $name; Size = [int64]$size }
+        }
+
+        if ($wanted.Count -eq 0) {
+            Write-Log 'pull ok: inbox already current, nothing to transfer'
+        } else {
+            foreach ($item in $wanted) {
+                $name = $item.Name
+                $pull = Invoke-WithTimeout -FilePath 'scp' -Label "pull $name" `
+                    -TimeoutSeconds $PullTimeoutSeconds -ArgumentList @(
+                        '-p', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=20',
+                        '-o', 'ServerAliveInterval=10', '-o', 'ServerAliveCountMax=3',
+                        "${SshHost}:rpi/inbox/$name", $InboxDir)
+                if ($pull.TimedOut) {
+                    Write-Log "continuing without $name" 'WARN'
+                } elseif ($pull.ExitCode -ne 0) {
+                    Write-Log "pull of ${name} FAILED (exit $($pull.ExitCode)): $($pull.Output -join ' ')" 'WARN'
+                } else {
+                    $got = (Get-Item (Join-Path $InboxDir $name)).Length
+                    Write-Log ("pulled {0} ({1} -> {2} bytes)" -f $name, $item.Size, $got)
+                }
+            }
+        }
     }
 }
 
@@ -473,7 +596,7 @@ if (-not $SkipPublish) {
     $publishScript = Join-Path $PSScriptRoot 'publish_ui.ps1'
     # The deadline covers the whole step, including the ssh and scp calls inside
     # publish_ui.ps1 - the hang measured on 2026-09-24 was one of those.
-    $publish = Invoke-WithTimeout -FilePath 'powershell' -Label 'publish' `
+    $publish = Invoke-WithTimeout -FilePath $PwshExe -Label 'publish' `
         -TimeoutSeconds $PublishTimeoutSeconds -ArgumentList @(
             '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $publishScript,
             '-Verify')

@@ -40,6 +40,16 @@
             border: 1px solid rgba(245,158,11,.35); background: rgba(245,158,11,.08);
             color: var(--warn); font-size: 12px; }
   .banner.hidden { display: none; }
+  /* The expected-freeze line. Same slot and rhythm as the alert above it, but
+     deliberately not styled like one: nothing is wrong yet, so the amber
+     border and background would be a false alarm for a year. Muted, no fill,
+     and a left rule to tie it to the banner it belongs under. */
+  .banner-note { margin-top: 8px; padding: 7px 12px; border-radius: 6px;
+                 border-left: 2px solid var(--line);
+                 color: var(--muted); font-size: 11.5px; line-height: 1.6; }
+  .banner-note b { color: var(--text); font-weight: 600; }
+  .banner-note code { font-size: 11px; }
+  .banner-note.hidden { display: none; }
 
   .panel { margin-top: 14px; background: var(--panel); border: 1px solid var(--line);
            border-radius: 10px; padding: 14px; }
@@ -163,6 +173,8 @@
     <div class="delta" id="delta"></div>
   </div>
 
+  <div class="banner-note hidden" id="bannernote"></div>
+
   <div class="banner hidden" id="banner"></div>
 
   <div class="panel">
@@ -267,6 +279,31 @@ function renderBanner(d) {
       "frozen from accumulated analyses.");
   }
 
+  // This is informational, not another warning: after the bootstrap alert, keep
+  // a fixed forecast visible so readers do not have to run the calibration
+  // tool just to learn when the baseline is expected to settle. It is derived
+  // from the same autocorrelation-aware estimate as `python -m rpi.calibrate`.
+  const note = document.getElementById("bannernote");
+  const c = d.meta.calibration;
+  if (c) {
+    const expected = new Date(c.expected_on + "T00:00:00Z").toLocaleDateString(
+      undefined, { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
+    if (c.ready) {
+      note.innerHTML = "<b>Baseline b is ready to freeze.</b> The precision target " +
+        "has been reached; run <code>python -m rpi.calibrate --apply</code> to set it.";
+    } else {
+      note.innerHTML = "<b>Expected b freeze: " + esc(expected) + "</b> " +
+        "(about " + Math.max(1, Math.ceil(c.days_remaining)).toLocaleString() +
+        " more days at the current rate). Current estimate: b = " +
+        c.mean_b.toFixed(4) + " \u00B1 " + c.se.toFixed(4) +
+        "; target precision \u00B1 " + c.target_se.toFixed(2) + ".";
+    }
+    note.classList.remove("hidden");
+  } else {
+    note.classList.add("hidden");
+    note.innerHTML = "";
+  }
+
   // Two different problems, deliberately kept apart: "waiting" is a queue the
   // analyser is expected to drain during its own run, so seeing it here means
   // that run could not; "failed" is work the retry policy has given up on,
@@ -294,10 +331,10 @@ function renderBanner(d) {
   if (!msgs.length) {
     el.classList.add("hidden");
     el.innerHTML = "";
-    return;
+  } else {
+    el.classList.remove("hidden");
+    el.innerHTML = msgs.map(m => "<div>" + esc(m) + "</div>").join("");
   }
-  el.classList.remove("hidden");
-  el.innerHTML = msgs.map(m => "<div>" + esc(m) + "</div>").join("");
 }
 
 function renderStats(d) {

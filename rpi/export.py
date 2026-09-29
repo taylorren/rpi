@@ -168,6 +168,68 @@ def build_news(rows: Iterable[Any], cfg: config_mod.RpiConfig,
     return news[:limit]
 
 
+def calibration_progress(conn: Any, cfg: config_mod.RpiConfig,
+                         schema_version: int,
+                         now: datetime) -> Optional[Dict[str, Any]]:
+    """Estimate when the baseline can be frozen, for the UI to display.
+
+    The estimate itself is owned by ``rpi.calibrate`` - duplicating the
+    autocorrelation and effective-sample-size maths here would create a second
+    source of truth for a number a reader will compare against that tool's own
+    output. So it is imported and called, not reimplemented.
+
+    Two deliberate choices:
+
+    * Imported lazily, inside the function. Nothing on the hourly path should
+      gain an import it does not need, and ``calibrate`` is the one module that
+      touches NumPy.
+    * Any failure returns ``None`` rather than raising. This feeds a single
+      informational line on a page; a missing date is a small loss, while an
+      exception would take the whole export - and with it the index itself -
+      down with it. The page omits the line when the key is absent.
+
+    Returns ``None`` once ``b`` is calibrated: the date is then no longer a
+    question, and the bootstrap banner next to it has already disappeared.
+    """
+    if cfg.calibrated:
+        return None
+
+    try:
+        from . import calibrate
+    except Exception:  # pragma: no cover - import is stdlib-only
+        return None
+
+    try:
+        rows = storage.snapshots(conn, cfg.config_version, schema_version)
+        values = [float(row["s_value"]) for row in rows]
+        stats = calibrate.analyse(values, cfg.snapshot_minutes,
+                                  cfg.config_version)
+    except Exception:  # pragma: no cover - defensive, see docstring
+        return None
+
+    if stats.get("reason"):
+        return None
+
+    days = float(stats["days"])
+    needed = float(stats["days_needed"])
+    # ``days_needed`` equals ``days`` once ready, so the clamp keeps the
+    # countdown from going negative on the day the target is met.
+    remaining = max(needed - days, 0.0)
+    expected = now + timedelta(days=remaining)
+
+    return {
+        "ready": bool(stats["ready"]),
+        "days": round(days, 1),
+        "days_needed": round(needed),
+        "days_remaining": round(remaining),
+        "expected_on": expected.date().isoformat(),
+        "mean_b": round(float(stats["mean"]), 4),
+        "se": round(float(stats["se"]), 4),
+        "target_se": calibrate.TARGET_SE,
+        "n_effective": round(float(stats["n_effective"]), 1),
+    }
+
+
 def build_payload(conn: Any, cfg: config_mod.RpiConfig, schema_version: int,
                   now: Optional[datetime] = None,
                   news_limit: int = 400) -> Dict[str, Any]:
@@ -252,6 +314,11 @@ def build_payload(conn: Any, cfg: config_mod.RpiConfig, schema_version: int,
             "ma_hours": MOVING_AVERAGE_HOURS,
             "last_analysis": storage.last_analysis_time(conn, schema_version),
             "model": storage.get_meta(conn, "model"),
+            # Absent once b is calibrated, or if the estimate could not be
+            # made. The page treats a missing key as "say nothing", never as
+            # an error, so the index still publishes either way.
+            "calibration": calibration_progress(
+                conn, cfg, schema_version, now),
         },
         "summary": stats,
         "windows": {

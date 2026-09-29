@@ -110,9 +110,10 @@ the same moment. Losing that race is not fatal — the pull tolerates a stale in
 quietly costs an hour of freshness on every run it loses, and nothing reports it.
 
 The fetch itself takes about three seconds (measured: cron fires 07:55:00, the inbox file
-and state are written by 07:55:03), and the workstation cycle about a minute (pull 11 s,
-pipeline 24 s, publish and live check 17 s). So a :56 start is published and verified by
-:57, and the five-minute gap in front of the pull is generous.
+and state are written by 07:55:03), and the workstation cycle about two minutes
+(measured 2026-09-29: pull 1 s when nothing changed, pipeline 30-150 s depending on
+the scoring backlog, publish and live check 17 s). The five-minute gap in front of
+the pull is generous.
 
 The minute is also load-bearing for the chart, and that part is easy to undo by accident.
 The "Today" window is the current UTC day (`rpi/export.py`), and the page only draws a
@@ -164,14 +165,20 @@ The log grows ~3 MB/year at 24 runs a day; rotate or truncate it occasionally.
 
 ## Workstation schedule
 
-`deploy/pull_and_run.ps1` pulls, checks freshness, then runs the pipeline. Register it:
+`deploy/pull_and_run.ps1` pulls, checks freshness, then runs the pipeline. Register it
+against **PowerShell 7**, by full path:
 
 ```powershell
 schtasks /Create /TN "RPI pipeline" /SC HOURLY /MO 1 /ST 00:56 /F `
-  /TR "powershell -NoProfile -ExecutionPolicy Bypass -File d:\programs\rpi\deploy\pull_and_run.ps1"
+  /TR '"C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -File d:\programs\rpi\deploy\pull_and_run.ps1'
 ```
 
-Run it manually to test: `powershell -NoProfile -ExecutionPolicy Bypass -File deploy\pull_and_run.ps1`
+The path needs the inner quotes: without them, `schtasks` splits on the space in
+`Program Files` and the task ends up with `Execute` = `C:\Program` and the rest as
+arguments. Verified by reading the stored action back, not by eye.
+
+Run it manually to test:
+`& "$env:ProgramFiles\PowerShell\7\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -File deploy\pull_and_run.ps1`
 
 Remove it with: `schtasks /Delete /TN "RPI pipeline" /F`
 
@@ -200,6 +207,95 @@ the machine comes back would run the pipeline at an arbitrary minute, and the
 minute is load-bearing (see "Why :51, not :00"). Whatever was missed is picked up
 by the next scheduled cycle regardless, because ingestion is idempotent and the
 inbox only accumulates.
+
+### Why the task names the full pwsh path
+
+`powershell` and `pwsh` are two different products, not two versions of one thing.
+`powershell` is Windows PowerShell 5.1, a frozen OS component at
+`System32\WindowsPowerShell\v1.0\powershell.exe`; `pwsh` is PowerShell 7.x, a separate
+install at `Program Files\PowerShell\7\pwsh.exe`. Installing 7.x does not move the
+`powershell` name, so this task ran 5.1 for its whole life while 7.6.6 sat unused beside
+it, and nothing said so: the task definition reading `powershell` and the `StartBoundary`
+of 2026-09-24 were the only traces.
+
+That mattered, because 5.1 is where the bug below lives — `[datetime]::UnixEpoch`
+evaluates to `$null` there — and where `Add-Content` writes the ANSI codepage, which is
+why `Write-Log` goes through .NET instead. Both were diagnosed the hard way. The stored
+path also keeps `PATH` out of it, since a scheduled task inherits a different environment
+from an interactive shell.
+
+The host is now logged at the top of every cycle, for the same reason:
+
+```
+2026-09-29 16:08:41  INFO    host: PowerShell 7.6.6 (C:\Program Files\PowerShell\7\pwsh.exe)
+```
+
+The script still runs correctly under 5.1, so `powershell -File` stays fine for
+hand-testing — the encoding pinning and the epoch-from-parts workaround are kept for
+exactly that case.
+
+### Alerts under PowerShell 7: the toast is delegated
+
+`Send-Alert` shows a Windows toast. WinRT cannot be loaded by PowerShell 7 at all:
+`[Windows.UI.Notifications.ToastNotificationManager, ..., ContentType = WindowsRuntime]`
+resolves under 5.1 and throws "type not found" under 7.6.6. There is no projection
+assembly to fall back on either — a native 7.x toast needs `Microsoft.Windows.SDK.NET.dll`
+and `WinRT.Runtime.dll` from the Windows App SDK, and this repository installs nothing.
+
+So the toast code lives in `deploy/toast.ps1` and is invoked through the in-box
+`powershell.exe`, which is an OS component rather than a dependency. Title and message
+travel as `RPI_TOAST_TITLE` and `RPI_TOAST_MESSAGE` environment variables rather than
+arguments: quoting a message containing parentheses, a timestamp and a full stop for both
+`CreateProcess` and PowerShell at once is how an alert gets silently mangled. Delegating
+also keeps the alert identical whichever host runs the pipeline — one code path, one
+behaviour to test, rather than a version that works under 5.1 and a silent no-op under 7.
+
+A toast is best-effort and never the record: `logs/alerts.log` is written before it is
+attempted, and the toast has its own 30 s deadline so a stuck one cannot hold the cycle.
+
+### Why the pull is incremental, not a wildcard
+
+The pull used to be a single `scp 'go4pro:rpi/inbox/*.jsonl' inbox`, which
+re-sent the **entire retained inbox** on every hourly cycle. That is correct and
+harmless while the inbox is small, and it stops being either as soon as it is not:
+
+| | |
+| --- | --- |
+| Retained inbox on 2026-09-29 | 7 files, 1.7 MB |
+| Time to transfer all of it | ~300 s (measured, twice) |
+| `-PullTimeoutSeconds` | 120 s |
+
+So the pull was killed by its own deadline on **every** cycle, the inbox was never
+updated, and the index froze — while the fetcher on the VPS was perfectly healthy
+and had been writing items the whole time. The staleness check did its job and
+alerted correctly ("No new items for 427 min"); the alert just pointed at cron,
+because the message describes the symptom the check can see, not the pull that
+caused it.
+
+Nothing was wrong with the fetcher, the VPS, the network, or the deadline. The
+deadline was the only thing behaving as designed; it was timing out on work that
+did not need doing. Note that the original 11 s measurement was honest — the
+inbox was simply a fraction of its present size, and the wildcard made the cost
+of every cycle grow with retention while the deadline stayed fixed.
+
+The pull now asks the VPS which files are missing or newer (size **and** mtime)
+and transfers only those, so a cycle costs one `ssh` listing plus at most one
+~80 KB file. Measured after the change: 1 s when the inbox is already current,
+against ~300 s before, and it no longer grows as history accumulates. The fetcher
+only ever appends to the file for the current UTC day, so nothing older than
+yesterday can change.
+
+Two details are load-bearing and easy to undo by accident:
+
+* **`[datetime]::UnixEpoch` is unavailable in Windows PowerShell 5.1** (it arrived in
+  .NET Core 2.1), and evaluates to `$null` there rather than failing loudly. This was
+  live, not hypothetical: the scheduled task ran 5.1 until 2026-09-29 (see "Why the task
+  names the full pwsh path"), so every comparison silently failed and every file was
+  re-pulled — the exact behaviour this step exists to prevent. The epoch is therefore
+  built from parts and pinned to UTC.
+* **The size must travel with the file name.** Carrying a bare name left `$size`
+  pointing at the last entry of the listing, so the transfer log reported every
+  file with the same wrong "before" size.
 
 ## Publishing the UI
 
@@ -249,7 +345,7 @@ certbot needs port 80 reachable for the HTTP-01 challenge, and nginx already lis
 ### Verifying end to end
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File deploy\publish_ui.ps1 -Verify
+& "$env:ProgramFiles\PowerShell\7\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -File deploy\publish_ui.ps1 -Verify
 ```
 
 `-Verify` fetches the public URL and reports the level, item count and duplicates merged
@@ -266,8 +362,10 @@ error is the expected outcome when only the default server answers.
 | Scoring service down | analysis skipped, index rebuilt from stored scores; the backlog stays in the export, so the health check alerts |
 | An item fails to score | recorded per item and retried automatically after 30 min, up to 3 attempts; then *parked* and alerted as its own condition |
 | Pull or publish hangs | killed at its own deadline (120 s and 180 s), logged as WARN; the cycle still finishes and the next one runs |
+| The pull is slower than its deadline | the transfer is incremental, not a wildcard - see below - so it does not grow with inbox history |
 | Fetcher emits nothing | normal; ingestion is idempotent and finds no new items |
 | Publish fails | logged as WARN; the local chart is still correct and the next cycle retries |
+| A toast cannot be shown | `logs/alerts.log` was already written, so the record survives; the popup is best-effort and, because WinRT is unavailable in PowerShell 7, is raised by the in-box 5.1 instead |
 
 Nothing fails silently, which matters because every stage is quiet on success.
 
