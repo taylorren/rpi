@@ -216,6 +216,15 @@ let DATA = null, WINDOW = "today";
 const compact = n => n.toLocaleString(undefined, { maximumFractionDigits: 2,
   minimumFractionDigits: 2 });
 const pct = n => (n >= 0 ? "+" : "") + n.toFixed(3) + "%";
+// A projected date is only as good as the sample behind it, so its uncertainty is
+// quoted in months: "+-4 months" is a range a reader can weigh, where "+-127 days"
+// reads as precision that is not there.
+const rough = n => {
+  const days = Math.round(n);
+  if (days < 45) return days + (days === 1 ? " day" : " days");
+  const months = Math.max(1, Math.round(days / 30.4));
+  return months + (months === 1 ? " month" : " months");
+};
 const esc = s => String(s).replace(/[&<>"]/g, c =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
@@ -280,9 +289,16 @@ function renderBanner(d) {
   }
 
   // This is informational, not another warning: after the bootstrap alert, keep
-  // a fixed forecast visible so readers do not have to run the calibration
-  // tool just to learn when the baseline is expected to settle. It is derived
-  // from the same autocorrelation-aware estimate as `python -m rpi.calibrate`.
+  // the forecast visible so readers do not have to run the calibration tool just
+  // to learn when the baseline is expected to settle. It is derived from the same
+  // autocorrelation-aware estimate as `python -m rpi.calibrate`, warm-up days and
+  // all, so the two always agree.
+  //
+  // The date is kept even while that estimate is still settling, because "not
+  // yet" is less useful than "roughly when" - but it is hedged with the sample's
+  // own uncertainty rather than quoted to the day. The projection is re-fitted as
+  // data arrives, so on a young series it moves by months; showing the day alone
+  // would invite reading it as an appointment.
   const note = document.getElementById("bannernote");
   const c = d.meta.calibration;
   if (c) {
@@ -292,11 +308,16 @@ function renderBanner(d) {
       note.innerHTML = "<b>Baseline b is ready to freeze.</b> The precision target " +
         "has been reached; run <code>python -m rpi.calibrate --apply</code> to set it.";
     } else {
-      note.innerHTML = "<b>Expected b freeze: " + esc(expected) + "</b> " +
-        "(about " + Math.max(1, Math.ceil(c.days_remaining)).toLocaleString() +
-        " more days at the current rate). Current estimate: b = " +
-        c.mean_b.toFixed(4) + " \u00B1 " + c.se.toFixed(4) +
-        "; target precision \u00B1 " + c.target_se.toFixed(2) + ".";
+      const band = c.spread_days ? " (&plusmn;" + rough(c.spread_days) + ")" : "";
+      const hedge = c.settled ? "" :
+        " <b>Rough:</b> the sample is still small, so this date moves as it grows.";
+      note.innerHTML = "<b>Expected b freeze: " + esc(expected) + "</b>" + band +
+        " (about " + Math.max(1, Math.ceil(c.days_remaining)).toLocaleString() +
+        " more days at the current rate" +
+        (c.warmup_days ? ", counting from the first day with real coverage" : "") +
+        "). Current estimate: b = " + c.mean_b.toFixed(4) + " &plusmn; " +
+        c.se.toFixed(4) + "; target precision &plusmn; " + c.target_se.toFixed(2) + "." +
+        hedge;
     }
     note.classList.remove("hidden");
   } else {

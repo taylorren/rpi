@@ -176,7 +176,18 @@ def calibration_progress(conn: Any, cfg: config_mod.RpiConfig,
     The estimate itself is owned by ``rpi.calibrate`` - duplicating the
     autocorrelation and effective-sample-size maths here would create a second
     source of truth for a number a reader will compare against that tool's own
-    output. So it is imported and called, not reimplemented.
+    output. So its ``fit`` is imported and called, not reimplemented, which also
+    means the warm-up cut is decided in exactly one place for both callers: the
+    opening days carried a handful of stories, and those readings otherwise
+    dominate the spread and drag the date with them.
+
+    The date is published even while the estimate is still settling, because "not
+    yet" is less useful to a reader than "roughly when" - but it is published as a
+    range rather than an appointment. ``spread_days`` carries how far the date
+    could be out on the sample's own evidence, and ``settled`` says whether the
+    sample is large enough for the date to be read at face value at all. Both are
+    for the page to hedge with; the honest alternative, hiding the date, was
+    rejected because the projection is the question a reader actually has.
 
     Two deliberate choices:
 
@@ -201,9 +212,7 @@ def calibration_progress(conn: Any, cfg: config_mod.RpiConfig,
 
     try:
         rows = storage.snapshots(conn, cfg.config_version, schema_version)
-        values = [float(row["s_value"]) for row in rows]
-        stats = calibrate.analyse(values, cfg.snapshot_minutes,
-                                  cfg.config_version)
+        stats = calibrate.fit(rows, cfg.snapshot_minutes, cfg.config_version)
     except Exception:  # pragma: no cover - defensive, see docstring
         return None
 
@@ -219,13 +228,25 @@ def calibration_progress(conn: Any, cfg: config_mod.RpiConfig,
 
     return {
         "ready": bool(stats["ready"]),
+        # False while the sample is too small for the date to be read at face
+        # value. The page hedges with it rather than hiding the date.
+        "settled": bool(stats.get("settled", False)),
         "days": round(days, 1),
         "days_needed": round(needed),
         "days_remaining": round(remaining),
+        # How far the date could be out on the sample's own evidence. The date is
+        # re-fitted whenever the spread or the correlation time moves, so on a
+        # young series it largely re-dates itself; this is what says so.
+        "spread_days": round(float(stats.get("spread_days", 0.0))),
+        "warmup_days": round(float(stats.get("dropped_days", 0.0)), 1),
         "expected_on": expected.date().isoformat(),
         "mean_b": round(float(stats["mean"]), 4),
         "se": round(float(stats["se"]), 4),
         "target_se": calibrate.TARGET_SE,
+        # Carried so the page can show what moves the date, and so a reader can
+        # reconcile it with ``python -m rpi.calibrate`` line by line.
+        "sd": round(float(stats["sd"]), 4),
+        "tau_c_days": round(float(stats["tau_c_days"]), 2),
         "n_effective": round(float(stats["n_effective"]), 1),
     }
 

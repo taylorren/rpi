@@ -164,9 +164,9 @@ settling-in period, so that the index responds to news being *unusual* rather th
 
 > **Current status: $b$ is still 0, and the site says so in a banner on every page.** The index is therefore drifting slowly downward while the data accumulates, and the level should be treated as provisional.
 > 
-> **How long is "while the data accumulates"? Much longer than it looks.** The mood is a smoothed average with a half-life measured in days, so consecutive readings carry almost the same information. After six days of running, there are only about **four independent
-> observations** to average — not the six hundred that the number of readings suggests.
-> Pinning the mean mood tightly enough to make the correction worthwhile needs on the order of **a year** of history.
+> **How long is "while the data accumulates"? Much longer than it looks.** The mood is a smoothed average with a half-life measured in days, so consecutive readings carry almost the same information. Measured on the live series it decorrelates in about half a day, so a week of running buys roughly a dozen independent observations, however many readings the snapshot count suggests. Pinning the mean mood tightly enough to make the correction worthwhile needs **months** of history, and the banner quotes a projected date for that: read it as a range, because it is re-fitted as data arrives and moves by months while the sample is young (on the evidence so far, anywhere from late 2026 to late 2027).
+> 
+> The first days of the series are excluded from that estimate on purpose. Coverage builds up: the opening days carried one to fifteen scored stories a day against one to two hundred once everything was running, which makes $S(t)$ one or two headlines rather than an average. Those readings otherwise dominate the sample's spread and drag the projected date around; `python -m rpi.calibrate` prints how much history it dropped.
 > 
 > A quick estimate is worse than none. Calibrating from a fortnight would leave residual drift of roughly 20% a year, which is *larger* than the 11% bias it was meant to remove — so it would replace a known small error with a bigger unknown one. The rule is that a calibration is only worth applying once what it leaves behind is clearly smaller than what it removes. `python -m rpi.calibrate` reports where things stand and refuses to apply
 > an estimate until it is worth applying.

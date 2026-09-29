@@ -39,7 +39,10 @@ DEFAULT_TAU_HOURS = 36.0
 # Reference level the index treats as "normal news". BOOTSTRAP VALUE.
 # News media is structurally negative, so with b = 0 the index would decay
 # forever. This is set to 0 provisionally and is frozen from accumulated
-# analyses once roughly two weeks of data exist; see REQUIREMENTS.
+# analyses once ``python -m rpi.calibrate`` says the estimate has settled; see
+# that module for what "settled" means and how long it takes (months, not
+# weeks - the mood decorrelates in under a day, so running for a week buys only
+# a dozen or so independent observations).
 DEFAULT_BASELINE_B = 0.0
 
 DEFAULT_INDEX_BASE = 100.0

@@ -139,7 +139,7 @@ its 800-lag cap, and results are identical either way):
 
 | History | Snapshots | Naive | NumPy |
 | --- | --- | --- | --- |
-| 6.4 days (current) | 615 | 3.1 - 3.5 ms | 2.0 ms |
+| 6.4 days | 615 | 3.1 - 3.5 ms | 2.0 ms |
 | 1 year | 35,040 | 0.8 - 3.0 s | 7.7 ms |
 | 5 years | 175,200 | 3.4 - 15.6 s | 41 ms |
 

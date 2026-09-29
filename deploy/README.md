@@ -70,7 +70,7 @@ third-party import in the repository is optional and confined to a single file:
 FFT-based autocorrelation when it is importable, and falls back to a naive loop when it is
 not. Both produce identical numbers on every series checked, including the live snapshot
 series - so installing NumPy changes only how long a manual calibration report takes, and
-that is too quick to notice either way (about 3 ms at the current 615 snapshots, and
+that is too quick to notice either way (about 3 ms at twelve days of snapshots, and
 0.8 - 3.0 s even after a year of history, against 7.7 ms with NumPy). The measurements are
 recorded in that file's docstring and in `REQUIREMENTS.md`.
 

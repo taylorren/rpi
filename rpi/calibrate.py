@@ -10,15 +10,40 @@ that has nothing to do with the world. ``b`` is meant to be set to the long-run 
 
 Why this is not just "average the snapshots"
 --------------------------------------------
-``S(t)`` is highly autocorrelated - it is a smoothed average with a half-life measured in
-days, so consecutive snapshots carry almost the same information. Treating 500 snapshots
-as 500 independent observations would understate the uncertainty by well over an order of
-magnitude. The effective sample size is roughly ``duration / correlation time``, which for
-a 36-hour half-life means about one independent observation every two days, not every
-fifteen minutes.
+``S(t)`` is highly autocorrelated - consecutive snapshots carry almost the same
+information. Treating 500 snapshots as 500 independent observations would understate the
+uncertainty by two orders of magnitude. The effective sample size is roughly
+``duration / correlation time``.
+
+The correlation time is **measured, not assumed**. It is tempting to derive it from
+``tau_hours`` - a 36-hour half-life suggests a correlation time near 52 hours, so one
+independent observation every two days - but the live series decorrelates far faster than
+that, because the weighted mean is dominated by which stories happen to be in the window
+rather than by the decay kernel alone. Measured on the live series the correlation time is
+51-62 snapshots (0.5-0.65 days), so an independent observation arrives roughly every 15
+hours. Deriving it from ``tau_hours`` instead would have understated the uncertainty by a
+factor of three and pulled the projected freeze date months early.
 
 That distinction is the whole point of this tool: it is the difference between "we have
 plenty of data" and "we have a handful of observations".
+
+Which days are in the sample
+----------------------------
+The opening days of the series are excluded on purpose. Coverage builds up: on this corpus
+the first five days carried 1-15 scored stories a day, against 100-200 a day once the
+fetcher and the scoring service were both running. With a handful of stories in the decay
+horizon, ``S(t)`` is one or two headlines rather than an average, and those readings swing
+to +/-4 - which then dominate the sample's variance for weeks afterwards, dragging ``sd``,
+``se``, the drift estimate and the projected freeze date with them. On the live series the
+first five days accounted for most of the sample spread (``sd`` 0.64 against 0.22 once they
+are dropped).
+
+So the sample begins at the first snapshot whose horizon holds at least
+``WARMUP_MIN_ITEMS`` stories, and the dropped prefix is *reported* rather than silently
+ignored. The cut is a prefix, never a scattered filter: the series has to stay contiguous
+or the autocorrelation lags stop meaning anything. A trimmed sample must also span at least
+``MIN_SPAN_DAYS`` before readiness can be claimed at all, because the eight-snapshot floor
+``analyse`` keeps is only two hours of history.
 
 Reported
 --------
@@ -28,6 +53,7 @@ Reported
 * ``SE`` / ``95% CI``- uncertainty of the mean, corrected for autocorrelation
 * implied drift with ``b = 0`` and with the recommended ``b``
 * a readiness verdict and, if not ready, how much longer is needed
+* whether the estimate has settled, and how far the projected date could be out
 
 Usage::
 
@@ -69,7 +95,7 @@ import math
 import statistics
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 try:
     import numpy as np
 except Exception:
@@ -85,6 +111,30 @@ TARGET_SE = 0.05
 # Correlation search bound, in snapshots. Comfortably past a 36h half-life while
 # keeping the naive autocorrelation loop cheap.
 MAX_LAG_SEARCH = 800
+
+# Coverage floor for the sample, in stories present in the decay horizon. The
+# opening days measure nothing: with a few stories in the window S(t) is one or
+# two headlines, and those readings then dominate the sample's variance for weeks
+# afterwards - which is what moved the projected freeze date from July 2027 to
+# April 2027 in four days on the live series. Full coverage on this corpus is
+# 100-200 stories a day, so 50 excludes the warm-up without touching a day that
+# means anything. Never raise this to make a projection look better; it is a
+# statement about coverage, not about the answer.
+WARMUP_MIN_ITEMS = 50
+
+# Below this many effective observations the estimate of ``se`` is itself
+# uncertain by tens of percent, so the projected date - which goes as ``se**2`` -
+# is an indication rather than an appointment. The date is still reported; it is
+# flagged, and hedged with its own spread, instead of being quoted to the day.
+SETTLED_OBSERVATIONS = 20
+
+# Least real time a trimmed sample may span and still be quotable. ``analyse``
+# already refuses fewer than eight snapshots, but eight snapshots is two hours:
+# right at the coverage step a trim can leave a handful of rows whose spread is
+# tiny only because almost no time has passed. Two days is the smallest span on
+# which the correlation time is even measurable, so below it the projection is
+# still reported but readiness is withheld.
+MIN_SPAN_DAYS = 2.0
 
 
 def correlation_time(values: Sequence[float]) -> float:
@@ -150,6 +200,22 @@ def analyse(values: Sequence[float], snapshot_minutes: int,
     span_minutes = n * snapshot_minutes
     days = span_minutes / 1440.0
 
+    # The span at which ``se`` reaches ``TARGET_SE``. ``se`` falls as
+    # 1/sqrt(time), so the span scales as ``(se / target) ** 2`` - the "4x the
+    # data to halve the error" rule, taken once. Note that the current ``days``
+    # cancels out of that product: ``days_needed`` moves only when ``sd`` or the
+    # correlation time moves, which is why the projected date is an estimate that
+    # gets re-fitted rather than a countdown that ticks down.
+    days_needed = (days * (se / TARGET_SE) ** 2) if se > TARGET_SE else days
+
+    # How far the projected date could be out on this sample's own evidence.
+    # ``se`` is proportional to the sample's ``sd``, whose relative error is about
+    # ``1/sqrt(2 * (n_eff - 1))``, and the date goes as ``se**2``, so that error
+    # doubles. Reported so a rough projection reads as a range.
+    spread_days = 0.0
+    if se > TARGET_SE and n_effective > 2.0:
+        spread_days = days_needed * 2.0 / math.sqrt(2.0 * (n_effective - 1.0))
+
     return {
         "n": n,
         "days": days,
@@ -161,9 +227,72 @@ def analyse(values: Sequence[float], snapshot_minutes: int,
         "se": se,
         "ci_half_width": half_width,
         "ready": se <= TARGET_SE,
-        "days_needed": (days * (se / TARGET_SE) ** 2) if se > TARGET_SE else days,
+        "days_needed": days_needed,
+        "spread_days": spread_days,
+        "settled": n_effective >= SETTLED_OBSERVATIONS,
         "config_version": config_version,
     }
+
+
+def covered_start(rows: Sequence[Any],
+                  min_items: int = WARMUP_MIN_ITEMS) -> Optional[int]:
+    """Index of the first snapshot whose coverage is representative, or None.
+
+    Walks the warm-up off the front of the series rather than filtering rows out
+    of the middle of it, so the sample stays contiguous and the autocorrelation
+    lags keep their meaning. ``None`` means nothing reached the floor - the whole
+    series is warm-up - which is a coverage problem to report rather than a
+    reason to print nothing: a caller still gets its series, and flags the
+    estimate instead of losing it.
+    """
+    if min_items <= 0:
+        return 0
+    for index, row in enumerate(rows):
+        try:
+            count = int(row["item_count"])
+        except (IndexError, KeyError, TypeError, ValueError):
+            continue
+        if count >= min_items:
+            return index
+    return None
+
+
+def fit(rows: Sequence[Any], snapshot_minutes: int, config_version: int,
+        min_items: int = WARMUP_MIN_ITEMS) -> Dict[str, Any]:
+    """Analyse the covered part of a snapshot series.
+
+    The single entry point for both this tool and the export. Both must agree on
+    which days are in the sample and what ``b`` would be, because the site quotes
+    a date next to a figure a reader can re-derive here.
+
+    Adds the warm-up bookkeeping to the statistics: ``dropped_snapshots``,
+    ``dropped_days``, the ``min_items`` floor that produced them, and
+    ``coverage_met``.
+
+    Readiness needs a sample that can support the claim, so it is withheld unless
+    coverage reached the floor *and* the retained span is at least
+    ``MIN_SPAN_DAYS``. ``--apply`` and the site's freeze announcement both key off
+    ``ready``, and a trim can otherwise leave a handful of rows whose spread looks
+    wonderful because barely any time has passed. The projection itself is still
+    reported in that case - a rough date beats no date - and ``quotable`` says
+    whether it can be taken at face value.
+    """
+    first = covered_start(rows, min_items)
+    dropped = first if first is not None else 0
+    values = [float(row["s_value"]) for row in rows[dropped:]]
+    stats = analyse(values, snapshot_minutes, config_version)
+    stats["dropped_snapshots"] = dropped
+    stats["dropped_days"] = dropped * snapshot_minutes / 1440.0
+    stats["min_items"] = min_items
+    stats["coverage_met"] = first is not None
+
+    quotable = (bool(stats["coverage_met"])
+                and float(stats.get("days", 0.0)) >= MIN_SPAN_DAYS)
+    stats["quotable"] = quotable
+    if not quotable:
+        stats["ready"] = False
+        stats["settled"] = False
+    return stats
 
 
 def drift_percent_per_day(mean_s: float, cfg: config_mod.RpiConfig) -> float:
@@ -178,21 +307,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--schema-version", type=int, default=schema.SCHEMA_VERSION)
     parser.add_argument("--apply", action="store_true",
                         help="write the estimate into rpi.config.json")
+    parser.add_argument("--min-items", type=int, default=WARMUP_MIN_ITEMS,
+                        help="coverage floor, in stories per snapshot, for the "
+                             "warm-up cut (0 keeps every snapshot)")
     args = parser.parse_args(argv)
 
     cfg = config_mod.load()
     conn = storage.connect(args.db)
     try:
         rows = storage.snapshots(conn, cfg.config_version, args.schema_version)
-        values: List[float] = [float(row["s_value"]) for row in rows]
     finally:
         conn.close()
 
-    if not values:
+    if not rows:
         print("no snapshots; run the pipeline first")
         return 1
 
-    stats = analyse(values, cfg.snapshot_minutes, cfg.config_version)
+    stats = fit(rows, cfg.snapshot_minutes, cfg.config_version, args.min_items)
     if stats.get("reason"):
         print("not enough data: {}".format(stats["reason"]))
         return 1
@@ -203,14 +334,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     print("samples        : {} snapshots over {:.1f} days".format(
         stats["n"], stats["days"]))
+    if stats["dropped_snapshots"]:
+        print("warm-up cut    : first {} snapshots ({:.1f} days) dropped - coverage".format(
+            stats["dropped_snapshots"], stats["dropped_days"]))
+        print("                 was below {} stories in the decay horizon".format(
+            stats["min_items"]))
     print("mean S(t)      : {:+.4f}   <- the recommended b".format(mean))
     print("sd S(t)        : {:.4f}".format(stats["sd"]))
     print()
     print("autocorrelation: {:.0f} snapshots = {:.2f} days".format(
         stats["tau_c_snapshots"], stats["tau_c_days"]))
-    print("  The mood stays correlated with itself for days, so consecutive")
-    print("  snapshots are near-duplicates. Counting them as independent would")
-    print("  understate the uncertainty badly.")
+    print("  Consecutive snapshots carry almost the same information, so counting")
+    print("  them as independent observations would understate the uncertainty")
+    print("  badly. This correlation time is measured from the series, not derived")
+    print("  from tau: the window's contents turn over faster than the decay does.")
     print("effective n    : {:.1f} independent observations (not {})".format(
         stats["n_effective"], stats["n"]))
     print("standard error : {:.4f}   (95% CI {:+.4f} .. {:+.4f})".format(
@@ -232,10 +369,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         print("VERDICT: NOT ready. Standard error {:.4f} > target {:.2f}".format(
             stats["se"], TARGET_SE))
-        print("         roughly {:.0f} days of history needed (have {:.1f}).".format(
+        print("         roughly {:.0f} days of covered history needed (have {:.1f}).".format(
             stats["days_needed"], stats["days"]))
         print("         Uncertainty falls as 1/sqrt(time), so it takes 4x the data")
         print("         to halve the error.")
+        if stats["spread_days"]:
+            print("         Read the projection as a range: the sample's own uncertainty")
+            print("         puts the date about +-{:.0f} days around it.".format(
+                stats["spread_days"]))
         print()
 
         # The point of the table: a quick calibration is not a cheap calibration.
