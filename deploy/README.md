@@ -322,11 +322,30 @@ The site config is in `deploy/nginx-rpi.go4pro.org.conf`, mirroring the existing
 `wiki.go4pro.org` site on the same host. It is staged at `~/rpi/nginx-rpi.go4pro.org.conf`:
 
 ```bash
+# staging
+scp deploy/nginx-rpi.go4pro.org.conf go4pro:~/rpi/nginx-rpi.go4pro.org.conf
+# the file is gitignored, so git cannot normalise its line endings - make sure it
+# is LF before installing (nginx would otherwise read a trailing \r as part of
+# server_name and silently stop matching the domain)
+sed -i 's/\r$//' ~/rpi/nginx-rpi.go4pro.org.conf
+
 sudo cp ~/rpi/nginx-rpi.go4pro.org.conf /etc/nginx/sites-available/rpi
 sudo ln -sf /etc/nginx/sites-available/rpi /etc/nginx/sites-enabled/rpi
 sudo nginx -t          # check BEFORE reloading; this host also serves default/webmail/wiki
 sudo systemctl reload nginx
 ```
+
+**To change an already-installed config**, do not `sudo cp` the repo file over it: certbot
+has since rewritten the live one (see the warning below). `deploy/apply_nginx_cache_headers.sh`
+does the edit surgically — it replaces only the cache block, backs up first, runs `nginx -t`
+and restores the backup if the test fails:
+
+```bash
+scp deploy/apply_nginx_cache_headers.sh go4pro:~/rpi/apply_nginx_cache_headers.sh
+ssh -t go4pro 'bash ~/rpi/apply_nginx_cache_headers.sh'   # one sudo password
+```
+
+It is idempotent: a second run reports the block is already present and changes nothing.
 
 Confirm plain HTTP serves before adding TLS:
 
@@ -342,6 +361,33 @@ sudo certbot --nginx -d rpi.go4pro.org
 
 certbot needs port 80 reachable for the HTTP-01 challenge, and nginx already listens there.
 
+> **If certbot has already run**, the live `/etc/nginx/sites-available/rpi` carries the 443
+> block certbot added, and the repo copy does not. Overwriting it with the repo file drops
+> TLS. Copy the new `location = /index.html` block across instead, then
+> `sudo nginx -t && sudo systemctl reload nginx` — or overwrite and re-run
+> `sudo certbot --nginx -d rpi.go4pro.org`, which re-adds the 443 block from the
+> certificate it already holds.
+
+### Why both files are served `Cache-Control: no-cache`
+
+Only `data/rpi.json` was exempt from caching at first, and on 2026-09-29 that made a
+successful deploy look like a failed one. A rewritten forecast went live on the server —
+the served `index.html` matched the local file character for character — while the
+browser kept rendering the previous page's JavaScript, because a response with no
+`Cache-Control` at all is cached heuristically. The page re-fetches the data every 60
+seconds, so stale *numbers* mean a frozen or restored tab; stale *wording* means the
+browser is running yesterday's JavaScript, and that persists until the cache is
+invalidated. Both files are therefore declared uncacheable:
+
+```bash
+curl -sI https://rpi.go4pro.org/            # expect: Cache-Control: no-cache, no-store, must-revalidate
+curl -sI https://rpi.go4pro.org/data/rpi.json   # expect: the same
+```
+
+Until this config is installed, `Ctrl+Shift+R` is the workaround — and it is worth
+running even after, since a browser that cached the page under the old headers keeps
+the copy it already has.
+
 ### Verifying end to end
 
 ```powershell
@@ -350,6 +396,11 @@ certbot needs port 80 reachable for the HTTP-01 challenge, and nginx already lis
 
 `-Verify` fetches the public URL and reports the level, item count and duplicates merged
 from the served JSON — so it confirms the whole chain, not just that a file was uploaded.
+It then compares the served page against the local `ui/index.html`, because the two files
+can be wrong independently: stale data is obvious from the level, while a page that does
+not match the local file is invisible until someone notices the site running yesterday's
+JavaScript. The comparison is of the decoded body rather than a byte count, so it does not
+break when nginx compresses the transfer.
 Before nginx is configured it reports a warning rather than failing, since a TLS trust
 error is the expected outcome when only the default server answers.
 
@@ -365,6 +416,7 @@ error is the expected outcome when only the default server answers.
 | The pull is slower than its deadline | the transfer is incremental, not a wildcard - see below - so it does not grow with inbox history |
 | Fetcher emits nothing | normal; ingestion is idempotent and finds no new items |
 | Publish fails | logged as WARN; the local chart is still correct and the next cycle retries |
+| Publish succeeds but the site looks unchanged | the browser is running a cached page: `-Verify`'s page check and `curl -I` separate that from a failed upload, and both files are now served `no-cache` (see above) so it should not recur |
 | A toast cannot be shown | `logs/alerts.log` was already written, so the record survives; the popup is best-effort and, because WinRT is unavailable in PowerShell 7, is raised by the in-box 5.1 instead |
 
 Nothing fails silently, which matters because every stage is quiet on success.

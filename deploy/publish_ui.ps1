@@ -106,6 +106,13 @@ Write-Log 'published index.html and data/rpi.json'
 
 # ---------------------------------------------------------------------------
 # Optional end-to-end verification
+#
+# Two files are published and both can be wrong independently: stale data is
+# obvious from the level, while a served page that does not match the local file
+# is invisible until someone notices the site is running yesterday's JavaScript.
+# The page check compares the body of the response against the file that was just
+# uploaded, which is why it is a content comparison and not a byte count - nginx
+# may compress the transfer, but Invoke-WebRequest hands back the decoded text.
 # ---------------------------------------------------------------------------
 if ($Verify) {
     try {
@@ -119,6 +126,21 @@ if ($Verify) {
                    $response.StatusCode, $remoteLevel, $remoteItems, $remoteDupes)
     } catch {
         Write-Log "live check FAILED for $Url - is nginx configured yet? $($_.Exception.Message)" 'WARN'
+    }
+
+    try {
+        $page = Invoke-WebRequest -Uri "$Url/?t=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" `
+            -UseBasicParsing -TimeoutSec 20
+        $local = [System.IO.File]::ReadAllText($UiFile, [System.Text.Encoding]::UTF8)
+        if ($page.Content -eq $local) {
+            Write-Log "live page check OK: served index.html matches the local file"
+        } else {
+            $hint = 'the upload may have failed, or a cache is serving an older page'
+            Write-Log ("live page check MISMATCH: served index.html is {0} chars, local is {1} - {2}" -f `
+                       $page.Content.Length, $local.Length, $hint) 'WARN'
+        }
+    } catch {
+        Write-Log "live page check FAILED for $Url - $($_.Exception.Message)" 'WARN'
     }
 }
 

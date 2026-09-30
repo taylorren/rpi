@@ -543,9 +543,19 @@ function renderChart(d) {
   pts.forEach((p, i) => {
     if (!p.v) return;
     const height = (p.v / maxVol) * VOL_H;
-    svgOut += "<rect class='vol' x='" + (x(times[i]) - barWidth / 2).toFixed(2) +
-      "' y='" + (volBase - height).toFixed(2) + "' width='" + barWidth.toFixed(2) +
-      "' height='" + height.toFixed(2) + "'/>";
+    // Bars are centred on their bucket time, and the first/last point sits
+    // exactly on the plot edge - so an edge bar would otherwise stick out half
+    // a bar-width past it. In a sparse window barWidth is large, and the svg
+    // deliberately allows overflow, so that half would be painted outside the
+    // panel altogether. Trim to the plot area instead: an edge bar shows only
+    // the slice of its bucket that falls inside the plotted range, and no bar
+    // can ever overlap its neighbour (trimming only ever shrinks a bar).
+    const left = Math.max(PAD.l, x(times[i]) - barWidth / 2);
+    const right = Math.min(W - PAD.r, x(times[i]) + barWidth / 2);
+    if (right - left <= 0) return;
+    svgOut += "<rect class='vol' x='" + left.toFixed(2) +
+      "' y='" + (volBase - height).toFixed(2) + "' width='" +
+      (right - left).toFixed(2) + "' height='" + height.toFixed(2) + "'/>";
   });
   svgOut += "<text class='axis' x='" + PAD.l + "' y='" + (plotBottom + 12) +
     "' text-anchor='start'>volume, peak " + maxVol + " per bucket</text>";

@@ -1,0 +1,11 @@
+# Files that Linux executes or parses must have LF endings in the working tree.
+# The deploy path copies them verbatim (`scp deploy/apply_nginx_cache_headers.sh
+# go4pro:~/rpi/` then `bash` on the host), so CRLF arriving there is not cosmetic:
+# a shell script gets a "bad interpreter" error, and nginx would read a trailing
+# \r as part of a value, silently changing `server_name`. core.autocrlf=true on
+# the Windows workstation would otherwise convert these on every checkout, so the
+# attribute has to win over that setting.
+# deploy/nginx-*.conf is gitignored (see .gitignore), so git cannot normalise it -
+# deploy/README.md carries the `sed -i 's/\r$//'` step for that one.
+*.sh    text eol=lf
+*.conf  text eol=lf
