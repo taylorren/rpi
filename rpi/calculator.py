@@ -20,28 +20,33 @@ flow - where older news fades with half-life ``tau_hours``:
 
     S(t) = \\frac{\\sum_i s_i 2^{-(t-t_i)/\\tau}}{\\sum_i 2^{-(t-t_i)/\\tau}}
 
-The index then integrates the *deviation from the baseline*, using the exact
-integrator for a piecewise-constant input:
+The index then reads the *deviation from the baseline* directly:
 
 .. math::
 
-    RPI_t = RPI_{t-1} \\cdot \\exp\\left(k \\cdot \\frac{\\Delta t}{1\\,day}
-            \\cdot \\frac{S(t) - b}{10}\\right)
+    RPI_t = base \\cdot \\exp\\left(c \\cdot (S(t) - b)\\right)
 
-Three properties follow, and each is deliberate:
+The level is a thermometer, not an odometer. Three properties follow, and each
+is deliberate:
 
-1. **The step is scaled by the timestep.** Applying a *level* term once per
-   snapshot without this would make the index depend on the cron interval -
-   the same news would produce a different chart at 15-minute versus hourly
-   sampling, and changing cadence would silently rewrite history. Scaling by
-   :math:`\\Delta t` makes the trajectory invariant to sampling rate.
-2. **Silence causes no drift.** With no items in the decay window the weighted
-   mean is 0/0, so :math:`S(t)` falls back to ``b`` and the exponent is zero.
-   The index only moves when there is news.
-3. **Sustained sentiment moves the index; single headlines do not.** Because
-   the level is integrated, one large story ramps the index for as long as
-   ``tau`` keeps it in the window, rather than causing a spike. This is
-   correct index behaviour, not a bug.
+1. **It is a reading, not an accumulation.** Nothing carries over between
+   snapshots, so the index revisits a level whenever the news does. An integral
+   of a mean over hundreds of stories is too slow to read: it turns a month of
+   news into one smooth arc with no days visible in it. A reading shows today.
+2. **Silence causes no movement.** With nothing in the decay window the
+   weighted mean is 0/0, so :math:`S(t)` falls back to ``b`` and the level
+   returns to the base. The index only moves when there is news.
+3. **An error in ``b`` is bounded.** It shifts the level by the constant factor
+   :math:`\\exp(c \\cdot \\delta)` - about 1.1% for the live baseline's own
+   standard error - so a baseline that is slightly wrong puts the whole chart
+   slightly high or low instead of sending it away over time. This is why the
+   calibration no longer has to be exact, and why the integrator's drift budget
+   has no analogue here.
+
+What the thermometer gives up is memory: it cannot show that the world has been
+worse for a month, because it only ever reads the present. That is the trade,
+and it is the intended one - the persistence of an event is carried by later
+reports about it, each scored on its own day.
 
 Neutral items are *included* with :math:`\\varepsilon = 0`: they dilute
 :math:`S(t)` toward zero, which is the right reading - a flood of unremarkable
@@ -75,6 +80,17 @@ _LN2 = math.log(2.0)
 # 2^-9 = 0.2%, small enough to drop. Expressed in half-lives rather than in tau,
 # because that is the natural unit for trading cost against accuracy here.
 MAX_AGE_FACTOR = 9.0
+
+# A window holding fewer stories than this is not a mean, it is one or two
+# headlines, so the level it implies is not a reading of anything. The series
+# therefore begins at the first snapshot whose window reaches the floor, and the
+# thin prefix is simply not published. The calibration discards the same prefix
+# for the same reason (``calibrate.WARMUP_MIN_ITEMS``); this is that floor
+# applied to the chart, which matters now because a thermometer shows its input
+# directly instead of damping it through an integral - on the live corpus the
+# opening days swung the level to 85 and 116, which is a fact about coverage and
+# not about the world.
+MIN_WINDOW_ITEMS = 50
 
 
 @dataclass(frozen=True)
@@ -212,28 +228,31 @@ def build_series(items: Sequence[ScoredItem], cfg: RpiConfig, start: datetime,
     baseline = cfg.baseline_b
 
     moment = _floor_to(start, step)
-    level = cfg.base_level
-    previous: Optional[datetime] = None
     series: List[Snapshot] = []
 
     while moment <= end:
         s_value = decayed_mean(items, times, moment, cfg.tau_hours, baseline)
 
-        if previous is not None:
-            dt_days = (moment - previous).total_seconds() / 86400.0
-            level *= math.exp(cfg.k * dt_days * (s_value - baseline) / 10.0)
-
         horizon = timedelta(hours=cfg.tau_hours * MAX_AGE_FACTOR)
         low = bisect.bisect_left(times, moment - horizon)
         high = bisect.bisect_right(times, moment)
+        count = max(high - low, 0)
 
-        series.append(Snapshot(
-            ts=moment,
-            level=level,
-            s_value=s_value,
-            item_count=max(high - low, 0),
-        ))
-        previous = moment
+        # The thin opening days are not published: see MIN_WINDOW_ITEMS.
+        if count >= MIN_WINDOW_ITEMS:
+            # The thermometer. The level is a *reading* of the mood against
+            # normal, not an accumulation of it: nothing carries over from the
+            # previous snapshot, so the index revisits a level whenever the news
+            # does, and a sustained deviation moves it once rather than
+            # compounding every tick. That is what makes an individual day's news
+            # visible at all - an integral of a mean over hundreds of stories
+            # moves too slowly to read.
+            series.append(Snapshot(
+                ts=moment,
+                level=cfg.base_level * math.exp(cfg.c * (s_value - baseline)),
+                s_value=s_value,
+                item_count=count,
+            ))
         moment += step
 
     return series

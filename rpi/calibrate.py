@@ -412,19 +412,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # numbers are for watching, not for tuning.
     if cfg.calibrated:
         latest_s = float(rows[-1]["s_value"])
-        flow_day = drift_percent_per_day(latest_s - cfg.baseline_b, cfg)
-        flow_year = ((1.0 + flow_day / 100.0) ** 365 - 1.0) * 100.0
+        level_now = cfg.base_level * math.exp(cfg.c * (latest_s - cfg.baseline_b))
+        offset = (math.exp(cfg.c * float(stats["se"])) - 1.0) * 100.0
         print("frozen b       : {:+.4f}   (rpi.config.json)".format(cfg.baseline_b))
         print("estimate moved : {:+.4f}   (current mean S(t) minus the frozen b)".format(
             mean - cfg.baseline_b))
-        print("drift the frozen b leaves at the current flow, S(t) = {:+.4f}:".format(
-            latest_s))
-        print("  {:+.4f}%/day, {:+.1f}%/year".format(flow_day, flow_year))
-        print("  That is the reading, not a fault to tune away: re-applying here")
-        print("  would absorb the movement the index exists to show. Re-run --apply")
-        print("  only when the INSTRUMENT changed - a source added or dropped, or")
-        print("  the model or schema replaced. tools/rescore_drift.py tests the")
-        print("  last of those by re-scoring stored text and comparing.")
+        print("level it implies at the current mood, S(t) = {:+.4f}:".format(latest_s))
+        print("  {:.2f}   (base {:.0f}, so {:+.1f}%)".format(
+            level_now, cfg.base_level, (level_now / cfg.base_level - 1.0) * 100.0))
+        print("  The level is a reading, not a running total, so this estimate's own")
+        print("  error moves it by a bounded factor - a standard error of {:.3f} is".format(
+            float(stats["se"])))
+        print("  {:.1f}% of level, and it does not grow with time. Re-run --apply only".format(
+            offset))
+        print("  when the INSTRUMENT changed: a source added or dropped, or the model or")
+        print("  schema replaced. A movement here is the reading, not a fault to tune")
+        print("  away - re-applying to follow the news would absorb the very movement")
+        print("  the index exists to show. tools/rescore_drift.py tests the instrument.")
         print()
 
     if stats["ready"]:

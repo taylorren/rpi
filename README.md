@@ -113,35 +113,52 @@ and the index holds still. **Silence never moves the index.**
 
 ## Step 3: from mood to index
 
-The final step is the subtle one, and it is what makes the index behave like an index
-rather than a scoreboard.
+The index reads the mood **compared with normal**:
 
-The index does **not** use the mood directly. It uses the mood **compared with normal**:
+$RPI = 100 \times \exp\left(c \times (S(t) - b)\right)$
 
-$RPI_{\text{now}} = RPI_{\text{before}} \times \exp\left(k \times \frac{\Delta t}{1\ \text{day}} \times \frac{S(t) - b}{10}\right)$
-
-| Symbol     | Value       | Meaning                                                    |
-| ---------- | ----------- | ---------------------------------------------------------- |
-| $k$        | 0.02        | sensitivity — how much a full-scale day moves the index    |
-| $\Delta t$ | varies      | time since the last update                                 |
-| $S(t)$     | varies      | the mood, −10 to +10                                       |
-| $\tau$     | 36 h        | decay half-life — news older than this counts half as much |
-| $b$        | 0 (for now) | the baseline: what counts as "normal news"                 |
+| Symbol | Value   | Meaning                                                    |
+| ------ | ------- | ---------------------------------------------------------- |
+| $c$    | 0.16    | sensitivity — how far a deviation moves the level          |
+| $S(t)$ | varies  | the mood, −10 to +10                                       |
+| $b$    | −0.3314 | the baseline: what counts as "normal news"                 |
+| $\tau$ | 36 h    | decay half-life — news older than this counts half as much |
 
 ### Reading it in plain English
 
-- **If the mood is normal** — that is, $S(t)$ equals $b$ — the exponent is zero and the
-  index does not move at all, no matter how much news there is.
-- **If the mood is as good as it can possibly be** ($S(t) = +10$, an entire day of
-  world-historic good news) the index rises about **2%** in a day.
-- **A typical day** moves it by about **0.1%**, in whichever direction the news leans.
+- **If the mood is normal** — that is, $S(t)$ equals $b$ — the level is exactly **100**, however much news there is.
+- **A one-standard-deviation mood** (about 0.11 on the live corpus) is a move of about **1.7%**.
+- **The mood at its observed extreme** (about ±0.3 from normal) puts the index about **5%** either side of 100.
 
 So the index measures **how unusual the news is**, not how bad. This is the whole design.
 
-### Why divide by time?
+### A thermometer, not an odometer
 
-$\Delta t$ is the gap since the previous update. Without it, the same news would produce a
-bigger change if we checked more often — checking every 15 minutes would give a wildly different chart from checking every hour, and changing the schedule would silently rewrite history. Dividing by the elapsed time makes the result depend only on the news, not on how often we look. That is why the site can update hourly and the history stays comparable.
+The level is a *reading*, not a running total. Nothing carries over from one update to the
+next, so the index revisits a level whenever the news does, and a bad month shows as a low
+reading rather than as a line that has slid away.
+
+That is deliberate, and it is what makes a day's news visible. An index that *integrates*
+the mood has to average it across hundreds of stories and then accumulate the result, and
+the two together move too slowly to read: on the live corpus the integrated version covered
+**0.44% in a month**, in one smooth arc with no days visible in it. The same news read as a
+thermometer covers 3–4% in a week, and the days are in it.
+
+What it gives up is memory — it cannot show that the world has been getting worse for a
+month. The persistence of an event is carried by later reports about it instead, each
+scored on its own day. That is the same rule the scoring follows: a warning or a forecast
+has not changed anything yet, so it scores low, and if the storm kills, those reports
+arrive and score on their own.
+
+### Why the opening days are missing
+
+The first snapshots are not published. Coverage builds up: the opening days of the live
+corpus held one to fifteen scored stories a day, against one to two hundred once every
+feed was running, and with a handful of stories in the decay window the mood is one or two
+headlines rather than an average. A thermometer shows its input directly, so those days
+would have drawn the level to 85 and 116 — a fact about coverage, not about the world.
+`rpi.calculator` therefore starts the series at the first window holding at least
+`MIN_WINDOW_ITEMS` stories, the same floor `rpi.calibrate` uses to trim its sample.
 
 ### Why the baseline $b$ exists
 
@@ -150,20 +167,21 @@ This is the least obvious part, and the most important.
 News is not neutral. About **70%** of the stories the index reads are negative, and that
 proportion is roughly constant from day to day. So the mood sits persistently below zero.
 Over the first six days of data it averaged **−0.16**, and never wandered outside roughly
-**±1.5**, even though the scale allows ±10. If $b$ were left at zero, the index would sink
-steadily — around **0.03% a day, or about 11% a year, with no change whatsoever in the world.** Give it a few years and it would read as the apocalypse proceeding on a smooth schedule.
+**±1.5**, even though the scale allows ±10. Left at zero, $b$ would hold the whole chart
+below 100 — on the current series about **7% below**, every day of the year — so the index
+would read "the world is worse than normal" with no change whatsoever in the world.
 
 That is not a signal about the world. It's a property of what news *is*.
 
 (A caution on that number: it is the average over a short sample, so treat it as an
-indication of the size of the effect, not a fixed constant. A single unusually quiet or
-alarming week moves it noticeably — on the live series, fifteen days in, the mean mood is
-**−0.49** and the implied bias about **30% a year**.)
+indication of the size of the effect, not a fixed constant. The live series has averaged
+between **−0.33** and **−0.52** depending on which weeks are included, and in the
+thermometer that difference is a level about **3%** apart.)
 
 The baseline corrects for it. $b$ is meant to be set to the average mood over a long
 settling-in period, so that the index responds to news being *unusual* rather than to news being *news*.
 
-> **Current status: $b$ is frozen at −0.5227** — the mean mood measured over the era in which all six sources were present, written into `rpi.config.json` once the estimate came inside its drift budget. The banner that said "$b$ is still 0" is gone, and the level is no longer provisional in the way it was. It is not permanent, but it is also not meant to be re-tuned to follow the news: a frozen $b$ cannot tell a darkening world from a hardening instrument, so re-applying it whenever the mood drifts would absorb the very movement the index exists to show. It should change only when the *instrument* changes — a source added or dropped, or the scoring model or schema replaced — and `tools/rescore_drift.py` is how the last of those is tested.
+> **Current status: $b$ is frozen at −0.3314** — the mean mood measured over the era in which all six sources were present, on the rubric in use, written into `rpi.config.json` once the estimate came inside its budget. The banner that said "$b$ is still 0" is gone, and the level is no longer provisional in the way it was. It is not permanent, but it is also not meant to be re-tuned to follow the news: a frozen $b$ cannot tell a darkening world from a hardening instrument, so re-applying it whenever the mood drifts would absorb the very movement the index exists to show. It should change only when the *instrument* changes — a source added or dropped, or the scoring model or schema replaced — and `tools/rescore_drift.py` is how the last of those is tested.
 > 
 > **How long is "while the data accumulates"? Shorter than it looks, and the target is a choice.** The mood is a smoothed average with a half-life measured in days, so consecutive readings carry almost the same information. Measured on the live series it decorrelates in about half a day, so a week of running buys roughly a dozen independent observations, however many readings the snapshot count suggests. How long it then takes is decided by how tightly you insist on pinning the mean, because the target is a drift budget rather than a statistical threshold: at the default of **0.10** in $S$ units — about ±7.6% a year of residual drift, against roughly 30% a year of bias removed on the current series — a few weeks of history is enough. Halving that target quadruples the wait, for drift that is already invisible on the chart. The banner quotes a projected date for it: read it as a range, because it is re-fitted as data arrives and moves while the sample is young (on the evidence so far, anywhere from late 2026 to late 2027).
 > 
@@ -172,7 +190,7 @@ settling-in period, so that the index responds to news being *unusual* rather th
 > A quick estimate is worse than none. Calibrating from a day or two would leave residual drift of roughly 20% a year, which is comparable to the bias it was meant to remove — so it would replace a known error with an equally large unknown one. The rule is that a calibration is only worth applying once what it leaves behind is clearly smaller than what it removes. `python -m rpi.calibrate` reports where things stand, shows the residual drift each candidate target would leave, and refuses to apply
 > an estimate until it is worth applying.
 > 
-> With $b$ set, read the level and the change figures directly. The structural bias is gone, and what is left is real: the scoring instrument has been verified deterministic and unchanged — **24 of 24 stored scores reproduced exactly**, including the first item ever scored — so the pipeline is a fixed function of the incoming news, and any drift in the index is a drift in the news. Whether the *world* darkened or the *newsrooms* did is not something this instrument can see: it measures the news. The one number worth watching is the worst case from the uncertainty in $b$ itself, about **±5.7% a year**, which `python -m rpi.calibrate` prints.
+> With $b$ set, read the level and the change figures directly. The structural bias is gone, and what is left is real: the scoring instrument has been verified deterministic and unchanged — **24 of 24 stored scores reproduced exactly**, including the first item ever scored — so the pipeline is a fixed function of the incoming news, and any movement in the index is movement in the news. Whether the *world* darkened or the *newsrooms* did is not something this instrument can see: it measures the news. And because the level is a reading rather than a running total, the uncertainty in $b$ is **bounded**: its own standard error (0.068) is a level offset of about **1.1%**, not a drift that accumulates.
 
 ---
 

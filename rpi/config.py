@@ -17,7 +17,12 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 # Bump when the values below change in a way that alters the index.
-CONFIG_VERSION = 2
+#
+# 2 -> 3 (2026-10-09): the index became a thermometer. The level is now
+# base * exp(c * (S - b)) - a reading of the mood against normal - instead of an
+# integral of the deviation, so snapshots from the two formulas are different
+# series rather than different points of one.
+CONFIG_VERSION = 3
 
 # How much a news item matters according to how far its effects reach.
 DEFAULT_SCOPE_WEIGHTS: Dict[str, float] = {
@@ -27,9 +32,21 @@ DEFAULT_SCOPE_WEIGHTS: Dict[str, float] = {
     "local": 0.2,
 }
 
-# Sensitivity: the fraction of the index moved by a full-scale day.
-# With k = 0.02 a maximal +10 deviation moves the index about 2%, and a
-# typical deviation of ~1 moves it about 0.2%.
+# Sensitivity of the thermometer: the level is base * exp(c * (S - b)), so c
+# turns a mood deviation into a level move. It is not a rate - there is no
+# per-day term any more - so it is set against the *observed* spread of the mood
+# rather than against a full-scale day. On the live corpus (2026-10-09,
+# schema_version 2) the mood runs about +-0.30 from normal, so 0.16 puts the
+# index about 5% either side, and a one-standard-deviation mood (0.11) is a 1.7%
+# move. Re-measure it whenever the mood's spread changes; p-weighting would
+# widen that spread severalfold.
+DEFAULT_C = 0.16
+
+# Sensitivity of the retired integrator. Kept because rpi.calibrate still
+# expresses its drift budget through it - with k = 0.02 a full-scale day moved
+# the index about 2%. The calculator no longer reads this: the index is a
+# thermometer, so an error in b moves the level by a bounded factor rather than
+# accumulating into a drift. See DEFAULT_C.
 DEFAULT_K = 0.02
 
 # Decay half-life for news relevance, in hours. Controls how quickly old news
@@ -88,6 +105,7 @@ class RpiConfig:
     endpoint: str = "http://127.0.0.1:8765"
     base_level: float = DEFAULT_INDEX_BASE
     k: float = DEFAULT_K
+    c: float = DEFAULT_C
     tau_hours: float = DEFAULT_TAU_HOURS
     baseline_b: float = DEFAULT_BASELINE_B
     snapshot_minutes: int = DEFAULT_SNAPSHOT_MINUTES

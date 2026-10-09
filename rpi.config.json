@@ -1,8 +1,9 @@
 {
   "base_level": 100.0,
   "baseline_b": -0.3314,
+  "c": 0.16,
   "calibrated": true,
-  "config_version": 2,
+  "config_version": 3,
   "dedupe_api_threshold": 0.5,
   "dedupe_auto_merge": 0.8,
   "dedupe_max_api_per_item": 3,
