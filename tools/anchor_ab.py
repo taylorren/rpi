@@ -180,7 +180,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("(dry run - nothing scored)")
         return 0
 
-    new_schema = schema.impact_schema()
+    alternative = schema.impact_schema()
     try:
         health = api.health(endpoint)
     except api.ApiError as exc:
@@ -199,35 +199,37 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for item in sample:
         context = analyse.build_context(item)
         try:
-            before = analyse.parse_response(
+            in_use = analyse.parse_response(
                 api.score(context, schema.ANALYSIS_SCHEMA, schema.SCORE_FIELDS,
                           endpoint=endpoint))
-            after = analyse.parse_response(
-                api.score(context, new_schema, schema.SCORE_FIELDS,
+            previous = analyse.parse_response(
+                api.score(context, alternative, schema.SCORE_FIELDS,
                           endpoint=endpoint))
         except api.ApiError as exc:
             failures += 1
             print("  FAILED {}: {}".format(str(item["id"])[:12], exc))
             continue
-        v1, v2 = before["impact_expected"], after["impact_expected"]
-        if v1 is None or v2 is None:
+        current_score = in_use["impact_expected"]
+        prior_score = previous["impact_expected"]
+        if current_score is None or prior_score is None:
             failures += 1
             continue
-        pairs.append({"item": item, "before": before, "after": after})
+        pairs.append({"item": item, "in_use": in_use, "previous": previous})
         if not args.quiet:
             print("{:<58} {:>7.2f} {:>7.2f} {:>+8.2f}".format(
-                " ".join((item["title"] or "?").split())[:58], v1, v2, v2 - v1))
+                " ".join((item["title"] or "?").split())[:58],
+                current_score, prior_score, current_score - prior_score))
 
     print()
     if not pairs:
         print("no successful pairs; nothing to compare")
         return 2
 
-    old = [p["before"]["impact_expected"] for p in pairs]
-    new = [p["after"]["impact_expected"] for p in pairs]
+    current = [p["in_use"]["impact_expected"] for p in pairs]
+    prior = [p["previous"]["impact_expected"] for p in pairs]
     same_sentiment = sum(1 for p in pairs
-                         if p["before"]["sentiment"] == p["after"]["sentiment"])
-    same_scope = sum(1 for p in pairs if p["before"]["scope"] == p["after"]["scope"])
+                         if p["in_use"]["sentiment"] == p["previous"]["sentiment"])
+    same_scope = sum(1 for p in pairs if p["in_use"]["scope"] == p["previous"]["scope"])
 
     print("=" * 78)
     print("only the impact rubric changed, so these two should be identical:")
@@ -238,7 +240,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     labels = ["0-1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
     bins = [(0, 2), (2, 3), (3, 4), (4, 5), (5, 6),
             (6, 7), (7, 8), (8, 9), (9, 10), (10, 11)]
-    for name, values in (("in use", old), ("candidate", new)):
+    for name, values in (("in use", current), ("previous", prior)):
         counts = [sum(1 for v in values if low <= v < high) for low, high in bins]
         print("{:<14}".format(name) + " ".join(
             "{}:{:<3}".format(label, count) for label, count in zip(labels, counts)))
@@ -248,8 +250,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "rubric", "mean", "sd", "max", "levels", "share>=7", "min")
     print(header)
     print("-" * len(header))
-    for name, values in (("stored", stored), ("in use, re-run", old),
-                         ("candidate", new)):
+    for name, values in (("stored", stored), ("in use, re-run", current),
+                         ("previous", prior)):
         if not values:
             continue
         stats = spread(values)
@@ -260,10 +262,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("{} call(s) failed and are excluded".format(failures))
 
     movers = sorted(pairs, key=lambda p: -abs(
-        p["after"]["impact_expected"] - p["before"]["impact_expected"]))
+        p["in_use"]["impact_expected"] - p["previous"]["impact_expected"]))
     print()
     print("signed impact - polarity x impact x scope weight, what the index eats:")
-    for name, key in (("in use, re-run", "before"), ("candidate", "after")):
+    for name, key in (("in use, re-run", "in_use"), ("previous", "previous")):
         values = [calculator.POLARITY.get(str(p[key]["sentiment"]).lower(), 0)
                   * float(p[key]["impact_expected"])
                   * cfg.scope_weight(p[key]["scope"]) for p in pairs]
@@ -273,17 +275,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                   min(values), max(values),
                   sum(1 for v in values if abs(v) >= 5) / len(values)))
     print()
-    print("biggest moves (v2 minus v1):")
+    print("biggest moves (in use minus previous):")
     for entry in movers[:5]:
         print("  {:+.2f}  {}".format(
-            entry["after"]["impact_expected"] - entry["before"]["impact_expected"],
+            entry["in_use"]["impact_expected"] - entry["previous"]["impact_expected"],
             " ".join((entry["item"]["title"] or "?").split())[:70]))
     print()
-    print("reading: if the top bins stay empty under the candidate, the wording is")
-    print("not the binding constraint - the model's beliefs are - and the next levers")
-    print("are fewer levels or a retrained adapter. If they fill, the rubric was the")
-    print("constraint, and adopting it means bumping SCHEMA_VERSION and re-scoring")
-    print("the corpus, because scores from two rubrics are not comparable.")
+    print("reading: this compares the rubric in use with the one it replaced. The")
+    print("columns that matter are sd and levels - the retired rubric crammed the top")
+    print("of the scale, and a change that widens neither has bought nothing. Nothing")
+    print("here writes to the database; adopting a rubric is a separate step, because")
+    print("it bumps SCHEMA_VERSION and makes every stored score incomparable.")
     return 0 if failures == 0 else 1
 
 
