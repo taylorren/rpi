@@ -59,7 +59,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from rpi import calculator, config as config_mod  # noqa: E402
+from rpi import calculator, calibrate, config as config_mod  # noqa: E402
 from rpi import paths, schema, storage  # noqa: E402
 
 _LN2 = math.log(2.0)
@@ -191,6 +191,50 @@ def daily(series: Sequence[calculator.Snapshot]) -> List[Tuple[datetime, float]]
     for key in sorted(seen):
         out.append(seen[key])
     return out
+
+
+def calibration(series: Sequence[calculator.Snapshot], cfg: Any) -> Dict[str, Any]:
+    """Re-measure ``b`` and the readiness verdict on a series' own units.
+
+    Uses ``calibrate`` itself rather than re-deriving the arithmetic: the warm-up
+    cut, the correlation time, the effective sample size and the budget the
+    verdict is judged against each have exactly one definition in this project,
+    and a second one here would drift from it silently.
+    """
+    rows = [{"ts": snap.ts.isoformat(), "item_count": snap.item_count,
+             "s_value": snap.s_value} for snap in series]
+    stats = calibrate.fit(rows, cfg.snapshot_minutes, cfg.config_version,
+                          calibrate.WARMUP_MIN_ITEMS,
+                          calibrate.level_target_se(cfg))
+    first = calibrate.covered_start(rows, calibrate.WARMUP_MIN_ITEMS)
+    covered = rows[first:] if first is not None else []
+    stats["b"] = (statistics.fmean(row["s_value"] for row in covered)
+                  if covered else float("nan"))
+    return stats
+
+
+def window_row(series: Sequence[calculator.Snapshot], days: float,
+               now: datetime, cfg: Any) -> str:
+    """``min .. max  span`` for the last ``days``, span relative to base level."""
+    cutoff = now - timedelta(days=days)
+    levels = [snap.level for snap in series if snap.ts >= cutoff]
+    if not levels:
+        return "-"
+    span = (max(levels) - min(levels)) / cfg.base_level * 100.0
+    return "{:.4f} .. {:.4f}   {:>6.3f}%".format(min(levels), max(levels), span)
+
+
+def median_daily_move(series: Sequence[calculator.Snapshot]) -> float:
+    """Median absolute one-day move of the level, in percent."""
+    by_day: Dict[str, float] = {}
+    for snap in series:
+        by_day[snap.ts.date().isoformat()] = snap.level
+    days = sorted(by_day)
+    if len(days) < 2:
+        return float("nan")
+    moves = [abs(by_day[b] - by_day[a]) / by_day[a] * 100.0
+             for a, b in zip(days, days[1:])]
+    return statistics.median(moves)
 
 
 def brief(text: Optional[str], width: int = 56) -> str:
@@ -388,8 +432,52 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
     # --- Section C ---------------------------------------------------------
+    print("C. the calibration, re-measured on B's own units")
+    print("   b is the mean S over the covered window, so it has to be re-measured")
+    print("   whenever the units change. c is a readability choice and is kept as it")
+    print("   is - see section 8 of DESIGN-HISTORY.md - so B's wider S shows up as a")
+    print("   larger swing in the level, which is the direction that section wanted.")
+    print()
+    cal_a = calibration(series_a, cfg)
+    cal_b = calibration(series_b, cfg)
+    print("   {:<36} {:>12} {:>12}".format("", "A", "B"))
+    print("   " + "-" * 62)
+    print("   {:<36} {:>12.4f} {:>12.4f}".format(
+        "b (A: config, B: measured)", cfg.baseline_b, cal_b["b"]))
+    print("   {:<36} {:>12.4f} {:>12.4f}".format(
+        "mean S of the covered window", cal_a["b"], cal_b["b"]))
+    print("   {:<36} {:>12.4f} {:>12.4f}".format(
+        "sd(S)", cal_a["sd"], cal_b["sd"]))
+    print("   {:<36} {:>12.2f} {:>12.2f}".format(
+        "tau_c (days)", cal_a["tau_c_days"], cal_b["tau_c_days"]))
+    print("   {:<36} {:>12.4f} {:>12.4f}".format(
+        "se", cal_a["se"], cal_b["se"]))
+    print("   {:<36} {:>12.4f} {:>12.4f}".format(
+        "target se (level budget / c)", cal_a["target_se"], cal_b["target_se"]))
+    print("   {:<36} {:>12} {:>12}".format(
+        "ready", str(cal_a["ready"]), str(cal_b["ready"])))
+    print("   {:<36} {:>12} {:>12}".format(
+        "dropped warm-up",
+        "{} snap / {:.1f} d".format(int(cal_a["dropped_snapshots"]),
+                                    cal_a["dropped_days"]),
+        "{} snap / {:.1f} d".format(int(cal_b["dropped_snapshots"]),
+                                    cal_b["dropped_days"])))
+    print("   {:<36} {:>12.1f} {:>12.1f}".format(
+        "covered span (days)", cal_a["days"], cal_b["days"]))
+    print()
+    print("   the published series by window - section 8's table, for both schemes")
+    print("   {:<10} {:<34} {:<34}".format("window", "A", "B"))
+    for label, days in (("today", 1.0), ("1 week", 7.0), ("1 month", 30.0)):
+        print("   {:<10} {:<34} {:<34}".format(
+            label, window_row(series_a, days, now, cfg),
+            window_row(series_b, days, now, cfg)))
+    print("   {:<10} {:>33.3f}% {:>33.3f}%".format(
+        "median/day", median_daily_move(keep_a), median_daily_move(keep_b)))
+    print()
+
+    # --- Section D ---------------------------------------------------------
     if case is None:
-        print("C. worked example: no story matched --case {!r}".format(args.case))
+        print("D. worked example: no story matched --case {!r}".format(args.case))
         return 0
 
     ids = [member["id"] for member in case["members"]]
@@ -398,7 +486,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     share_a, contrib_a = cluster_effect(ids, by_id_a, total_a)
     share_b, contrib_b = cluster_effect(ids, by_id_b, total_b)
 
-    print("C. worked example: cluster {} holds {} report(s)".format(
+    print("D. worked example: cluster {} holds {} report(s)".format(
         case["cluster_id"], len(case["members"])))
     print("   {:<4}{:<15}{:<18}{:<10}{:<15}{:>7}   {}".format(
         "", "outlet", "published", "sentiment", "scope", "signed",
