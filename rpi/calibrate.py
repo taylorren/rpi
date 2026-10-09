@@ -53,6 +53,7 @@ Reported
 * ``SE`` / ``95% CI``- uncertainty of the mean, corrected for autocorrelation
 * implied drift with ``b = 0`` and with the recommended ``b``
 * a readiness verdict and, if not ready, how much longer is needed
+* what the target SE is worth as a drift budget, and what loosening it buys
 * whether the estimate has settled, and how far the projected date could be out
 
 Usage::
@@ -103,10 +104,18 @@ except Exception:
 
 from . import config as config_mod, paths, schema, storage
 
-# The mean of S must be pinned this tightly before b can be trusted. Since the
-# daily drift is about 0.2 * mean_S percent, a standard error of 0.05 works out
-# to roughly +-0.01%/day, or about +-3.7%/year.
-TARGET_SE = 0.05
+# The mean of S must be pinned this tightly before b can be trusted. This is a
+# drift budget, not a statistical convention: with k = 0.02 an error of ``d`` in
+# the mean mood drifts the index by about 0.2 * d percent per day, or 73 * d
+# percent per year. 0.10 therefore leaves at most +-0.02%/day, about +-7.6%/year,
+# against the ~30%/year the correction removes on the live series: the "worth
+# doing" band this module's own verdict table already accepts, and roughly a
+# fifth of a typical day's move (median 1-day move ~0.1%), so it stays invisible
+# on the chart. It was 0.05, which bought +-3.7%/year for about four times the
+# wait - and since S(t) is not stationary (it drifted ~-0.2/week on the live
+# series), the extra scatter a tighter target chases is not the dominant
+# uncertainty anyway. tools/window_dominance.py splits that out.
+TARGET_SE = 0.10
 
 # Correlation search bound, in snapshots. Comfortably past a 36h half-life while
 # keeping the naive autocorrelation loop cheap.
@@ -182,7 +191,8 @@ def correlation_time(values: Sequence[float]) -> float:
 
 
 def analyse(values: Sequence[float], snapshot_minutes: int,
-            config_version: int) -> Dict[str, Any]:
+            config_version: int,
+            target_se: float = TARGET_SE) -> Dict[str, Any]:
     n = len(values)
     if n < 8:
         return {"n": n, "ready": False, "reason": "not enough snapshots yet"}
@@ -206,14 +216,14 @@ def analyse(values: Sequence[float], snapshot_minutes: int,
     # cancels out of that product: ``days_needed`` moves only when ``sd`` or the
     # correlation time moves, which is why the projected date is an estimate that
     # gets re-fitted rather than a countdown that ticks down.
-    days_needed = (days * (se / TARGET_SE) ** 2) if se > TARGET_SE else days
+    days_needed = (days * (se / target_se) ** 2) if se > target_se else days
 
     # How far the projected date could be out on this sample's own evidence.
     # ``se`` is proportional to the sample's ``sd``, whose relative error is about
     # ``1/sqrt(2 * (n_eff - 1))``, and the date goes as ``se**2``, so that error
     # doubles. Reported so a rough projection reads as a range.
     spread_days = 0.0
-    if se > TARGET_SE and n_effective > 2.0:
+    if se > target_se and n_effective > 2.0:
         spread_days = days_needed * 2.0 / math.sqrt(2.0 * (n_effective - 1.0))
 
     return {
@@ -226,7 +236,7 @@ def analyse(values: Sequence[float], snapshot_minutes: int,
         "n_effective": n_effective,
         "se": se,
         "ci_half_width": half_width,
-        "ready": se <= TARGET_SE,
+        "ready": se <= target_se,
         "days_needed": days_needed,
         "spread_days": spread_days,
         "settled": n_effective >= SETTLED_OBSERVATIONS,
@@ -258,7 +268,8 @@ def covered_start(rows: Sequence[Any],
 
 
 def fit(rows: Sequence[Any], snapshot_minutes: int, config_version: int,
-        min_items: int = WARMUP_MIN_ITEMS) -> Dict[str, Any]:
+        min_items: int = WARMUP_MIN_ITEMS,
+        target_se: float = TARGET_SE) -> Dict[str, Any]:
     """Analyse the covered part of a snapshot series.
 
     The single entry point for both this tool and the export. Both must agree on
@@ -280,11 +291,14 @@ def fit(rows: Sequence[Any], snapshot_minutes: int, config_version: int,
     first = covered_start(rows, min_items)
     dropped = first if first is not None else 0
     values = [float(row["s_value"]) for row in rows[dropped:]]
-    stats = analyse(values, snapshot_minutes, config_version)
+    stats = analyse(values, snapshot_minutes, config_version, target_se)
     stats["dropped_snapshots"] = dropped
     stats["dropped_days"] = dropped * snapshot_minutes / 1440.0
     stats["min_items"] = min_items
     stats["coverage_met"] = first is not None
+    # Carried in the stats so callers (the export, the replay tools) quote the
+    # budget the verdict was actually judged against, not the module default.
+    stats["target_se"] = target_se
 
     quotable = (bool(stats["coverage_met"])
                 and float(stats.get("days", 0.0)) >= MIN_SPAN_DAYS)
@@ -310,6 +324,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--min-items", type=int, default=WARMUP_MIN_ITEMS,
                         help="coverage floor, in stories per snapshot, for the "
                              "warm-up cut (0 keeps every snapshot)")
+    parser.add_argument("--target-se", type=float, default=TARGET_SE,
+                        help="drift budget, in S units: the standard error b must "
+                             "reach before freezing is worth it (default %(default)s)")
+    parser.add_argument("--since", type=str, default=None, metavar="YYYY-MM-DD",
+                        help="restrict the sample to snapshots from this day on - use it "
+                             "when an input changed (a source added or dropped), so b is "
+                             "measured on one homogeneous era instead of a blend of two")
     args = parser.parse_args(argv)
 
     cfg = config_mod.load()
@@ -323,7 +344,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("no snapshots; run the pipeline first")
         return 1
 
-    stats = fit(rows, cfg.snapshot_minutes, cfg.config_version, args.min_items)
+    if args.since:
+        # Snapshot stamps are fixed-width ISO-8601 UTC, so a date prefix compares
+        # correctly as a string and no parsing is needed. Filtered here rather
+        # than in the query so storage.snapshots keeps its single signature.
+        kept = [row for row in rows if str(row["ts"]) >= args.since]
+        if not kept:
+            print("no snapshots at or after {} (earliest is {})".format(
+                args.since, rows[0]["ts"]))
+            return 1
+        rows = kept
+
+    stats = fit(rows, cfg.snapshot_minutes, cfg.config_version, args.min_items,
+                args.target_se)
     if stats.get("reason"):
         print("not enough data: {}".format(stats["reason"]))
         return 1
@@ -334,6 +367,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     print("samples        : {} snapshots over {:.1f} days".format(
         stats["n"], stats["days"]))
+    if args.since:
+        print("sample era     : from {} only (--since)".format(args.since))
     if stats["dropped_snapshots"]:
         print("warm-up cut    : first {} snapshots ({:.1f} days) dropped - coverage".format(
             stats["dropped_snapshots"], stats["dropped_days"]))
@@ -352,6 +387,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         stats["n_effective"], stats["n"]))
     print("standard error : {:.4f}   (95% CI {:+.4f} .. {:+.4f})".format(
         stats["se"], mean - stats["ci_half_width"], mean + stats["ci_half_width"]))
+    budget_year = abs(((1.0 + drift_percent_per_day(stats["target_se"], cfg) / 100.0)
+                       ** 365 - 1.0) * 100.0)
+    print("drift budget   : SE <= {:.2f}, i.e. residual drift up to {:.1f}%/year".format(
+        stats["target_se"], budget_year))
     print()
     print("drift if b = 0         : {:+.4f}%/day  ({:+.1f}%/year)".format(current, annual))
     print("drift after calibration: {:+.4f}%/day  (by construction, if b is exact)"
@@ -363,12 +402,32 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         abs(((1.0 + drift_percent_per_day(stats["se"], cfg) / 100.0) ** 365 - 1.0) * 100.0)))
     print()
 
+    # Once b is frozen the useful question changes: not "how tightly is it
+    # pinned" but "is the frozen value still the right one". That is a recurring
+    # check rather than a one-off, because S(t) has no obligation to hold still -
+    # on this corpus it drifted about -0.2/week, which is what re-dated the
+    # projection for weeks while the estimate itself barely moved. These three
+    # numbers are what a weekly reading of this output is for.
+    if cfg.calibrated:
+        latest_s = float(rows[-1]["s_value"])
+        flow_day = drift_percent_per_day(latest_s - cfg.baseline_b, cfg)
+        flow_year = ((1.0 + flow_day / 100.0) ** 365 - 1.0) * 100.0
+        print("frozen b       : {:+.4f}   (rpi.config.json)".format(cfg.baseline_b))
+        print("estimate moved : {:+.4f}   (current mean S(t) minus the frozen b)".format(
+            mean - cfg.baseline_b))
+        print("drift the frozen b leaves at the current flow, S(t) = {:+.4f}:".format(
+            latest_s))
+        print("  {:+.4f}%/day, {:+.1f}%/year".format(flow_day, flow_year))
+        print("  Re-run --apply once that is no longer clearly smaller than the")
+        print("  {:+.1f}%/year it removes.".format(abs(annual)))
+        print()
+
     if stats["ready"]:
         print("VERDICT: ready. Standard error {:.4f} <= target {:.2f}".format(
-            stats["se"], TARGET_SE))
+            stats["se"], stats["target_se"]))
     else:
         print("VERDICT: NOT ready. Standard error {:.4f} > target {:.2f}".format(
-            stats["se"], TARGET_SE))
+            stats["se"], stats["target_se"]))
         print("         roughly {:.0f} days of covered history needed (have {:.1f}).".format(
             stats["days_needed"], stats["days"]))
         print("         Uncertainty falls as 1/sqrt(time), so it takes 4x the data")
@@ -390,7 +449,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print()
         print("  {:>10}  {:>9}  {:>13}  {:>12}  {}".format(
             "target SE", "days", "residual/day", "residual/yr", "verdict"))
-        for target in (0.05, 0.10, 0.15, 0.25, 0.40):
+        # The chosen budget is always shown, so the trade-off the verdict is
+        # judged on is visible rather than implied by a hardcoded ladder.
+        ladder = sorted({0.05, 0.10, 0.15, 0.25, 0.40, float(stats["target_se"])})
+        for target in ladder:
             n_eff = (stats["sd"] / target) ** 2
             need = 2.0 * stats["tau_c_days"] * n_eff
             per_day = abs(drift_percent_per_day(target, cfg))
@@ -401,8 +463,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 verdict = "no real gain"
             else:
                 verdict = "worse than nothing"
-            print("  {:>10.2f}  {:>7.0f} d  {:>12.4f}%  {:>11.1f}%  {}".format(
-                target, need, per_day, per_year, verdict))
+            chosen = ("  <- target"
+                      if abs(target - float(stats["target_se"])) < 1e-9 else "")
+            print("  {:>10.2f}  {:>7.0f} d  {:>12.4f}%  {:>11.1f}%  {}{}".format(
+                target, need, per_day, per_year, verdict, chosen))
         print()
         print("So a calibration is only worth applying once the residual drift it")
         print("leaves behind is clearly smaller than the drift it removes.")

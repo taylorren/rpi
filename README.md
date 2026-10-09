@@ -12,7 +12,7 @@ A small robot reads the world news, forms an opinion about each story, and publi
 
 It is genuinely that simple in concept:
 
-1. Every hour it collects the latest world news from four English-language news outlets.
+1. Every hour it collects the latest world news from six English-language news outlets.
 2. For each story it asks a language model three questions: *was this good or bad, how
    much does it matter, and who does it affect?*
 3. It combines those answers into one number per story.
@@ -157,22 +157,22 @@ That is not a signal about the world. It's a property of what news *is*.
 
 (A caution on that number: it is the average over a short sample, so treat it as an
 indication of the size of the effect, not a fixed constant. A single unusually quiet or
-alarming week moves it noticeably.)
+alarming week moves it noticeably — on the live series, fifteen days in, the mean mood is
+**−0.49** and the implied bias about **30% a year**.)
 
 The baseline corrects for it. $b$ is meant to be set to the average mood over a long
 settling-in period, so that the index responds to news being *unusual* rather than to news being *news*.
 
-> **Current status: $b$ is still 0, and the site says so in a banner on every page.** The index is therefore drifting slowly downward while the data accumulates, and the level should be treated as provisional.
+> **Current status: $b$ is frozen at −0.4991** — the mean mood over the covered sample, written into `rpi.config.json` once the estimate came inside its drift budget. The banner that said "$b$ is still 0" is gone, and the level is no longer provisional in the way it was. It is not permanent, though: the mood drifts (it fell about −0.2 a week through the first three weeks), so $b$ is a reading of the corpus rather than a constant of nature. `python -m rpi.calibrate` is meant to be re-read weekly and re-applied when the drift the frozen value leaves is no longer clearly smaller than the drift it removes; the tool prints both numbers.
 > 
-> **How long is "while the data accumulates"? Much longer than it looks.** The mood is a smoothed average with a half-life measured in days, so consecutive readings carry almost the same information. Measured on the live series it decorrelates in about half a day, so a week of running buys roughly a dozen independent observations, however many readings the snapshot count suggests. Pinning the mean mood tightly enough to make the correction worthwhile needs **months** of history, and the banner quotes a projected date for that: read it as a range, because it is re-fitted as data arrives and moves by months while the sample is young (on the evidence so far, anywhere from late 2026 to late 2027).
+> **How long is "while the data accumulates"? Shorter than it looks, and the target is a choice.** The mood is a smoothed average with a half-life measured in days, so consecutive readings carry almost the same information. Measured on the live series it decorrelates in about half a day, so a week of running buys roughly a dozen independent observations, however many readings the snapshot count suggests. How long it then takes is decided by how tightly you insist on pinning the mean, because the target is a drift budget rather than a statistical threshold: at the default of **0.10** in $S$ units — about ±7.6% a year of residual drift, against roughly 30% a year of bias removed on the current series — a few weeks of history is enough. Halving that target quadruples the wait, for drift that is already invisible on the chart. The banner quotes a projected date for it: read it as a range, because it is re-fitted as data arrives and moves while the sample is young (on the evidence so far, anywhere from late 2026 to late 2027).
 > 
 > The first days of the series are excluded from that estimate on purpose. Coverage builds up: the opening days carried one to fifteen scored stories a day against one to two hundred once everything was running, which makes $S(t)$ one or two headlines rather than an average. Those readings otherwise dominate the sample's spread and drag the projected date around; `python -m rpi.calibrate` prints how much history it dropped.
 > 
-> A quick estimate is worse than none. Calibrating from a fortnight would leave residual drift of roughly 20% a year, which is *larger* than the 11% bias it was meant to remove — so it would replace a known small error with a bigger unknown one. The rule is that a calibration is only worth applying once what it leaves behind is clearly smaller than what it removes. `python -m rpi.calibrate` reports where things stand and refuses to apply
+> A quick estimate is worse than none. Calibrating from a day or two would leave residual drift of roughly 20% a year, which is comparable to the bias it was meant to remove — so it would replace a known error with an equally large unknown one. The rule is that a calibration is only worth applying once what it leaves behind is clearly smaller than what it removes. `python -m rpi.calibrate` reports where things stand, shows the residual drift each candidate target would leave, and refuses to apply
 > an estimate until it is worth applying.
 > 
-> Until then, read the **change** figures rather than the absolute level. The drift
-> contributes only about 0.03% to a day's movement, which is small next to a typical day's real move, so the day-on-day readings are meaningful even while the level is not.
+> With $b$ set, read the level and the change figures directly. The structural bias is gone; what is left is the drift the frozen value leaves behind. On the calibration sample that was at worst **+5.7% a year** from the uncertainty in $b$ alone — but the mood's own movement matters more, and at the flow current when it was frozen the frozen value left about **−17.6% a year**. That is exactly what the weekly re-check exists to catch, and why re-calibration is maintenance rather than a one-off.
 
 ---
 
@@ -201,20 +201,32 @@ Stories covered by more than one outlet are shown once, with a badge showing how
 
 ## Where the news comes from
 
-Four English-language outlets, chosen to include both state-affiliated and independent
-editorial voices:
+Six English-language outlets, chosen to include both state-affiliated and independent
+editorial voices. Both how much each one publishes and how it scores are measured, not
+assumed:
 
-| Source       |                                   |
-| ------------ | --------------------------------- |
-| CGTN         | China's international broadcaster |
-| Al Jazeera   | Qatar-based                       |
-| BBC          | UK public service                 |
-| The Guardian | UK, independent                   |
+| Source       |                                          | Share of stories | Mean signed impact |
+| ------------ | ---------------------------------------- | ---------------- | ------------------ |
+| The Guardian | UK, independent                          | 34%              | −1.04              |
+| SCMP         | Hong Kong, Alibaba-owned                 | 25%              | −0.08              |
+| Al Jazeera   | Qatar-based                              | 19%              | −0.90              |
+| CGTN         | China's international broadcaster        | 11%              | **+0.76**          |
+| NYT          | US                                       | 7%               | −1.11              |
+| BBC          | UK public service                        | 5%               | −0.74              |
 
-This mix matters more than it might seem. When the index was built on a single source it read **70% positive**; with four sources it reads about **30% positive**. The first figure
+This mix matters more than it might seem. When the index was built on a single source it read **70% positive**; across the current six it reads about **30% positive**. The first figure
 was a fact about one newsroom's editorial choices, not about the world. That is the single strongest argument for using more than one source.
 
-The same story is frequently covered by all four. Before scoring, the stories are grouped so that one event counts once, however many outlets reported it — and the grouping is done by asking the model whether two headlines describe the same real-world event, with the local text comparison used only to narrow down which pairs are worth asking about.
+The same argument cuts the other way once there are several. The outlets disagree sharply — their
+mean signed impacts span 1.87 points, on a scale where the index responds to differences of about
+0.2 — and their volumes are very uneven, with two of the six making up 59% of the corpus between
+them. So **the mood depends on which outlet happens to publish most**: dropping The Guardian moves
+$S(t)$ by about +26%, dropping SCMP by about −18%, either of which is larger than the entire
+three-week drift the index has shown so far. That is a property of the instrument, not a fault in
+the arithmetic, and it is why a change to the source list is a change to what the index *measures*
+— and to what the baseline was calibrated against.
+
+The same story is frequently covered by several of them. Before scoring, the stories are grouped so that one event counts once, however many outlets reported it — and the grouping is done by asking the model whether two headlines describe the same real-world event, with the local text comparison used only to narrow down which pairs are worth asking about.
 
 ---
 
@@ -225,8 +237,10 @@ Stated plainly, because the alternative is pretending.
 - **The baseline is uncalibrated**, as described above. The level is provisional.
 - **The model is wrong sometimes**, and confidently wrong on occasion. It has scored a story about renaming AI as the largest positive event of the day, and rated a military build-up as entirely neutral. It does better on major news than on unusual wording.
 - **Magnitude is bunched.** Asked for 0–10, the model leans toward 5 for a lot of stories. Using the probability-weighted average rather than its single favourite answer recovers most of the lost resolution, but not all of it.
-- **The editorial mix is still narrow.** Four English-language outlets, two of them
-  state-affiliated, are not the world.
+- **The editorial mix is still narrow, and unevenly weighted.** Six English-language
+  outlets, two of them state-affiliated, are not the world — and because two of them are
+  59% of the corpus by volume, the index moves when an outlet's *publishing rate* changes,
+  with no change in the world at all.
 - **History is short.** The index only knows what those feeds currently publish — a few
   days, not years.
 - **The uncertainty estimate stops looking back at 8 days.** The mood's correlation time

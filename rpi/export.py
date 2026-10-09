@@ -242,7 +242,7 @@ def calibration_progress(conn: Any, cfg: config_mod.RpiConfig,
         "expected_on": expected.date().isoformat(),
         "mean_b": round(float(stats["mean"]), 4),
         "se": round(float(stats["se"]), 4),
-        "target_se": calibrate.TARGET_SE,
+        "target_se": float(stats.get("target_se", calibrate.TARGET_SE)),
         # Carried so the page can show what moves the date, and so a reader can
         # reconcile it with ``python -m rpi.calibrate`` line by line.
         "sd": round(float(stats["sd"]), 4),

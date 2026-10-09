@@ -37,14 +37,14 @@
     {
       "name": "scmp",
       "url": "https://www.scmp.com/rss/91/feed",
-      "enabled": false,
-      "_status": "VERIFIED via VPN: reachable, current, 499-500 char summaries. English."
+      "enabled": true,
+      "_status": "ENABLED. Reachable via VPN: current, 499-500 char summaries. English. Second-largest source by volume (~25% of the corpus) and the most neutral-scoring of the six: its mean signed impact is -0.08 against -0.74..-1.11 for the rest, so it measurably lifts S(t) - dropping it moves the mood about -18%."
     },
     {
       "name": "nyt-world",
       "url": "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
-      "enabled": false,
-      "_status": "VERIFIED via VPN: reachable, current, 131-166 char summaries. English."
+      "enabled": true,
+      "_status": "ENABLED. Reachable via VPN: current, 131-166 char summaries. English. Smallest source by volume (~7%), and the most negative-scoring of the six (mean signed impact -1.11)."
     },
     {
       "name": "bbc-world",
@@ -78,7 +78,9 @@
     }
   ],
 
-  "_active_set": "Four sources: CGTN (China, state), Al Jazeera (Qatar, state-funded), BBC (UK, public), Guardian (UK, independent). Chosen for a mix of state-affiliated and independent outlets, since a single state-affiliated source measurably skewed the sentiment breadth (70% positive alone vs 32% positive across four). Further candidates remain disabled below: scmp, nyt-world, npr-world, cna, chinanews-world, solidot.",
+  "_active_set": "Six sources: CGTN (China, state), Al Jazeera (Qatar, state-funded), BBC (UK, public), Guardian (UK, independent), SCMP (Hong Kong, Alibaba-owned), NYT (US). Chosen for a mix of state-affiliated and independent outlets, since a single source measurably skewed the sentiment breadth (70% positive alone vs ~30% across the set). Two consequences the index inherits from this choice, both measured rather than assumed: volume is very uneven (Guardian 34% and SCMP 25% are 59% of the corpus between them) and the outlets disagree sharply (mean signed impact from +0.76 for CGTN to -1.11 for NYT - a span of 1.87, on a scale where the index responds to differences of about 0.2). So the mood is not invariant to which outlet happens to publish most: dropping Guardian moves S(t) about +26%, dropping SCMP about -18%, both larger than the entire drift the index showed in its first three weeks. That is a property of the instrument. Remaining disabled candidates: npr-world, cna, chinanews-world, solidot.",
+
+  "_divergence_note": "2026-10-09: the deployed copy on the VPS had scmp and nyt-world ENABLED while this file had them disabled, so production measured six sources while the repo declared four - and b (-0.4991) was calibrated on that six-source corpus, i.e. partly on sources this file claimed were off. Reconciled by enabling both here. This file is pushed by hand (deploy/README.md: scp fetcher/fetch_rss.py fetcher/feeds.json go4pro:rpi/fetcher/), so the repo and the VPS can drift silently - verify with the fetcher's own log line 'reading N feed(s) from ...'.",
 
   "proxy": "auto",
 

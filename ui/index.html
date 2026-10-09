@@ -305,8 +305,15 @@ function renderBanner(d) {
     const expected = new Date(c.expected_on + "T00:00:00Z").toLocaleDateString(
       undefined, { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
     if (c.ready) {
-      note.innerHTML = "<b>Baseline b is ready to freeze.</b> The precision target " +
-        "has been reached; run <code>python -m rpi.calibrate --apply</code> to set it.";
+      // Ready is a drift-budget verdict, not a claim that the sample is rich:
+      // the two are independent, so the settled hedge must survive the flip or
+      // the caveat disappears at exactly the moment it starts to matter.
+      note.innerHTML = "<b>Baseline b is ready to freeze:</b> b = " +
+        c.mean_b.toFixed(4) + " &plusmn; " + c.se.toFixed(4) +
+        " meets the &plusmn;" + c.target_se.toFixed(2) + " drift budget. Run " +
+        "<code>python -m rpi.calibrate --apply</code> to set it." +
+        (c.settled ? "" :
+          " <b>Rough:</b> the sample is still small, so this value can still move.");
     } else {
       const band = c.spread_days ? " (&plusmn;" + rough(c.spread_days) + ")" : "";
       const hedge = c.settled ? "" :

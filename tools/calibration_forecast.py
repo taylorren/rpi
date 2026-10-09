@@ -45,6 +45,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--schema-version", type=int, default=schema.SCHEMA_VERSION)
     parser.add_argument("--min-items", type=int, default=calibrate.WARMUP_MIN_ITEMS,
                         help="coverage floor for the warm-up cut (0 disables it)")
+    parser.add_argument("--target-se", type=float, default=calibrate.TARGET_SE,
+                        help="drift budget b is judged against (default %(default)s)")
     parser.add_argument("--step-days", type=float, default=1.0,
                         help="how much history to add to each row")
     args = parser.parse_args(argv)
@@ -73,8 +75,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     print("warm-up  : dropped while coverage is below {} stories in the horizon"
           .format(args.min_items))
     print("target SE: {}, so b is quotable to about +-{:.2f}%/day"
-          .format(calibrate.TARGET_SE,
-                  abs(calibrate.drift_percent_per_day(calibrate.TARGET_SE, cfg))))
+          .format(args.target_se,
+                  abs(calibrate.drift_percent_per_day(args.target_se, cfg))))
     print()
     header = "{:>8} {:>7} {:>8} {:>8} {:>8} {:>7} {:>9}  {}".format(
         "run day", "snaps", "dropped", "sd", "tau (d)", "n_eff", "needed",
@@ -85,7 +87,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     for end in ends:
         window = rows[:end]
         stats = calibrate.fit(window, cfg.snapshot_minutes, cfg.config_version,
-                              args.min_items)
+                              args.min_items, args.target_se)
         if stats.get("reason"):
             continue
         # ``now`` for that run is the end of the series as it stood then, which is
