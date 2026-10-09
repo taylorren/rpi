@@ -101,23 +101,28 @@ SCORE_FIELDS: List[str] = ["impact"]
 # 7-9.5 because "changes the global order" catches grand-sounding commentary,
 # and level 6 - the middle - holds 2.2%. The eleven levels resolve to about 2.6.
 #
-# The candidate puts every level on one axis: depth of consequence for those it
-# touches, in terms of how much changes and how long that lasts, with reach
-# handed back to ``scope``. It has been through one A/B round - 100 stories,
-# both evenly sampled and the 100 highest-impact stories:
+# The anchors are the ones that measured best on the tail, and they put every
+# level on one axis: depth of consequence for those it touches, in terms of how
+# much changes and how long that lasts, with reach handed back to ``scope``.
+# Measured over three A/B rounds (100 stories, evenly sampled and the 100
+# highest-impact stories). Under the anchors above the tail is crammed - 67 of
+# 100 top stories land on level 6, spread 0.71 over 4 levels - and the body sits
+# at sd 0.99. With these anchors and the description below, the tail spreads to
+# 1.52 over 10 levels and, uniquely among the wordings tried, the body moves
+# too: sd 0.99 to 1.28. Two earlier descriptions left the body at 1.0, so it is
+# the principle below, not the anchors, that reaches it.
 #
-#   * it fixes the tail, which is what an index needs in order to show a big
-#     event: on the top-100 stories the spread went 0.71 to 1.47 and the levels
-#     used went 4 to 9, where the anchors above cram 67 of 100 into level 6;
-#   * it does not widen the general population (sd 1.05 to 1.03); there it
-#     mostly shifts the distribution down, which re-calibrating b absorbs;
-#   * its first revision had one systematic fault, and the two sentences in
-#     IMPACT_DESCRIPTION_CANDIDATE exist to fix it: it judged the transience of
-#     the reported act rather than the severity of the situation, demoting
-#     "months of toxic haze" and scoring a UN condemnation of attacks on
-#     civilians by the condemnation instead of by the attacks.
+# What the description says, and why. The index treats each report as its own
+# event and delegates persistence to the news flow: if an event matters, later
+# reports about it will arrive and carry their own scores, and guessing at
+# relatedness here would mean modelling a world we do not model. So the score is
+# what this report changed, as of this report - not the topic it discusses (an
+# opinion piece changes nothing) and not the situation it refers back to. A
+# condemnation is scored as a condemnation, because the attacks it condemns were
+# their own earlier reports; a warning or a forecast has not changed anything
+# yet, and if the storm kills, that will be reported and scored on its own.
 #
-# A 24-story sample had suggested the spread doubled; 100 stories showed that
+# A 24-story sample once suggested the spread doubled; 100 stories showed that
 # was small-sample noise. Use --limit 100 for decisions.
 #
 # Kept terse on purpose: the news text plus every field description has to fit
@@ -125,10 +130,10 @@ SCORE_FIELDS: List[str] = ["impact"]
 IMPACT_ANCHORS_CANDIDATE: Dict[str, str] = {
     "0": "nothing changes for anyone",
     "1": "a passing inconvenience, no lasting effect",
-    "2": "a brief disruption, normal again within days",
-    "3": "a real but contained change, undone within months",
-    "4": "a material change in conditions, a year or more to undo",
-    "5": "a lasting change to lives or institutions, years to undo, or an ongoing condition left unresolved",
+    "2": "a brief disruption, normal within days",
+    "3": "a real but contained change, recovered within months",
+    "4": "a material change in conditions, a year or more to recover, and not fully",
+    "5": "a lasting change to lives or institutions, years to recover",
     "6": "a permanent change, the previous state cannot be restored",
     "7": "a change that redefines what is possible for those affected",
     "8": "a historic change, redirecting the future of a country or a whole field",
@@ -137,13 +142,12 @@ IMPACT_ANCHORS_CANDIDATE: Dict[str, str] = {
 }
 
 IMPACT_DESCRIPTION_CANDIDATE = (
-    "Depth of consequence for those it affects, good or bad: how much is "
-    "changed, and how long that lasts. Judge the situation the story describes, "
-    "not the act of reporting it - score what is condemned, forecast or "
-    "analysed, not the condemnation, forecast or analysis. A condition that is "
-    "still going counts as lasting, however it began. Not how many people or "
-    "how much of the world it reaches; reach is a separate field. "
-    "0 = nothing changes, 10 = world-historic."
+    "Score this report's own development: how much has changed, for those it "
+    "affects, good or bad, as of this report. Not the topic it discusses, and "
+    "not the situation it refers back to - those were, or will be, other "
+    "reports, and each carries its own score. A warning, a forecast or a "
+    "commentary has not changed anything yet. Not how many people it reaches; "
+    "reach is a separate field. 0 = nothing changes, 10 = world-historic."
 )
 
 
