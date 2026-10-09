@@ -167,8 +167,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     in_use = schema.ANALYSIS_SCHEMA["impact"]
     if args.dry_run:
-        for name, field in (("v1 (in use)", in_use),
-                            ("v2 (candidate)", schema.impact_schema()["impact"])):
+        for name, field in (("in use", in_use),
+                            ("candidate", schema.impact_schema()["impact"])):
             print("{}: {}".format(name, field["description"]))
             for level in sorted(field["choice_descriptions"], key=int):
                 print("  {:>2}  {}".format(level, field["choice_descriptions"][level]))
@@ -190,7 +190,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print()
 
     if not args.quiet:
-        header = "{:<58} {:>7} {:>7} {:>8}".format("story", "v1", "v2", "v2-v1")
+        header = "{:<58} {:>7} {:>7} {:>8}".format("story", "in-use", "cand", "delta")
         print(header)
         print("-" * len(header))
 
@@ -238,7 +238,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     labels = ["0-1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
     bins = [(0, 2), (2, 3), (3, 4), (4, 5), (5, 6),
             (6, 7), (7, 8), (8, 9), (9, 10), (10, 11)]
-    for name, values in (("v1 (in use)", old), ("v2 (candidate)", new)):
+    for name, values in (("in use", old), ("candidate", new)):
         counts = [sum(1 for v in values if low <= v < high) for low, high in bins]
         print("{:<14}".format(name) + " ".join(
             "{}:{:<3}".format(label, count) for label, count in zip(labels, counts)))
@@ -248,8 +248,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "rubric", "mean", "sd", "max", "levels", "share>=7", "min")
     print(header)
     print("-" * len(header))
-    for name, values in (("stored", stored), ("v1 (re-run)", old),
-                         ("v2 (candidate)", new)):
+    for name, values in (("stored", stored), ("in use, re-run", old),
+                         ("candidate", new)):
         if not values:
             continue
         stats = spread(values)
@@ -263,7 +263,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         p["after"]["impact_expected"] - p["before"]["impact_expected"]))
     print()
     print("signed impact - polarity x impact x scope weight, what the index eats:")
-    for name, key in (("v1 (re-run)", "before"), ("v2 (candidate)", "after")):
+    for name, key in (("in use, re-run", "before"), ("candidate", "after")):
         values = [calculator.POLARITY.get(str(p[key]["sentiment"]).lower(), 0)
                   * float(p[key]["impact_expected"])
                   * cfg.scope_weight(p[key]["scope"]) for p in pairs]
@@ -279,9 +279,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             entry["after"]["impact_expected"] - entry["before"]["impact_expected"],
             " ".join((entry["item"]["title"] or "?").split())[:70]))
     print()
-    print("reading: if the top bins stay empty under v2, the wording is not the")
-    print("binding constraint - the model's beliefs are - and the next levers are")
-    print("fewer levels or a retrained adapter. If they fill, the rubric was the")
+    print("reading: if the top bins stay empty under the candidate, the wording is")
+    print("not the binding constraint - the model's beliefs are - and the next levers")
+    print("are fewer levels or a retrained adapter. If they fill, the rubric was the")
     print("constraint, and adopting it means bumping SCHEMA_VERSION and re-scoring")
     print("the corpus, because scores from two rubrics are not comparable.")
     return 0 if failures == 0 else 1
