@@ -366,6 +366,18 @@ loss lives - is wrong. The cost of one score per cluster is paid everywhere,
 because a cluster holds a spread of framings of one event (CGTN averages +0.76
 signed, NYT -1.11) and the index takes one draw from that spread.
 
+**Whose problem this is.** The flat rate is the evidence, and it points outward.
+Loose clustering would show up as visibly worse agreement in the long-drift bands;
+it does not, so tightening the dedupe would not buy anything. What is left is the
+corpus - the sources frame one event differently, which is what +0.76 against
+-1.11 measures, and a feed's summary is often a hook for a different fact than its
+headline: the NYT report of the Pillay award carries a one-line description of a UN
+commission's genocide finding, which is why the award scored -6.66. Neither is
+under this project's control.
+
+That leaves exactly one design decision - *which* report stands for an event - and
+the flat rate says it is not what moves the number. So the rule stays.
+
 The first run said otherwise. At 24 calls it produced a clean 100 / 100 / 83 / 67
 gradient, which is the story this section was going to tell. At 60 calls the
 gradient was gone. That is the sampling trap already recorded under "The tools
