@@ -78,6 +78,19 @@
   }
   .tip.on { opacity: 1; }
   .tip b { font-size: 13px; }
+  /* What carried the point. The tooltip already answered "how much"; these rows
+     answer "because of what", which is the question a reader actually has. */
+  .tipsec { margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 10px; letter-spacing: .05em;
+    text-transform: uppercase; }
+  .tiprow { display: flex; gap: 7px; align-items: baseline; margin-top: 3px;
+    max-width: 360px; }
+  .tiprow .sh { color: var(--muted); min-width: 33px; text-align: right; }
+  .tiprow .sg { min-width: 40px; text-align: right; font-weight: 700; }
+  .tiprow .sg.up { color: var(--up); }
+  .tiprow .sg.down { color: var(--down); }
+  .tiprow .src { color: var(--muted); min-width: 84px; }
+  .tiprow .tt { overflow: hidden; text-overflow: ellipsis; }
 
   /* A fixed column count rather than auto-fit. auto-fit made the number of
      columns depend on the viewport, so the cells landed as a ragged 7 + 3.
@@ -605,12 +618,26 @@ function attachHover(pts, times, x, y) {
     dot.setAttribute("cx", cx); dot.setAttribute("cy", cy);
     dot.style.display = "";
 
+    // The point's reading, then what produced it. A level on its own invites the
+    // question "why here?", and the answer is always a handful of reports rather
+    // than the aggregate - so they are named, with the share of the point's
+    // weight each one holds. The shares come from the export, computed with the
+    // same decay and impact weighting as the level above them.
+    const carried = (p.top || []).map(t =>
+      '<div class="tiprow"><span class="sh">' + (t.share * 100).toFixed(1) +
+      '%</span><span class="sg ' + (t.signed >= 0 ? "up" : "down") + '">' +
+      (t.signed >= 0 ? "+" : "\u2212") + Math.abs(t.signed).toFixed(2) +
+      '</span><span class="src">' + esc(t.source) + '</span><span class="tt">' +
+      esc(t.title.length > 46 ? t.title.slice(0, 45) + "\u2026" : t.title) +
+      "</span></div>").join("");
+
     tip.innerHTML = "<b>" + compact(p.level) + "</b><br>" +
       esc(new Date(p.t).toLocaleString()) + "<br>" +
-      "24h avg " + compact(p.ma) + "<br>" +
-      "S(t) " + (p.s >= 0 ? "+" : "") + p.s.toFixed(4) + "<br>" +
-      "volume " + p.v + " \u00B7 active " + p.n;
-    tip.style.left = Math.min(ev.clientX + 14, window.innerWidth - 190) + "px";
+      "24h avg " + compact(p.ma) + " \u00B7 S(t) " +
+      (p.s >= 0 ? "+" : "") + p.s.toFixed(4) + "<br>" +
+      "volume " + p.v + " \u00B7 active " + p.n +
+      (carried ? '<div class="tipsec">what carried this point</div>' + carried : "");
+    tip.style.left = Math.min(ev.clientX + 14, window.innerWidth - 400) + "px";
     tip.style.top = Math.max(ev.clientY - 62, 8) + "px";
     tip.classList.add("on");
   };

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -34,6 +35,13 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import bisect
 
 from . import calculator, config as config_mod, paths, schema, storage
+
+_LN2 = math.log(2.0)
+
+# How many reports a chart point's tooltip names. Three is what fits under a
+# cursor without covering the chart, and on the live corpus the top three
+# usually hold a fifth of the weight between them - enough to explain the point.
+TOOLTIP_CONTRIBUTORS = 3
 
 # Window for the moving average. 24 hours is the conventional "daily trend"
 # reading of an index and is what the requirements' note about typical stock
@@ -112,6 +120,82 @@ and is carried along as context for the decay maths.
             "v": volume,
         })
     return out
+
+
+def attach_contributors(window: List[Dict[str, Any]],
+                        items: Sequence[calculator.ScoredItem],
+                        labels: Dict[str, Dict[str, str]],
+                        cfg: config_mod.RpiConfig,
+                        top: int) -> None:
+    """Name the reports carrying each point, in place.
+
+    A point is not moved by "the news" in general but by the handful of reports
+    the decay and the impact weighting leave holding the weight, and a reader
+    asking *why is it 99.9 here* wants those names rather than the aggregate.
+
+    The shares use the same half-life and the same impact weighting as
+    ``calculator.decayed_mean``, so they add up to the reading the point already
+    shows - which is also the check that this is not a second, drifting
+    explanation of the same number. A neutral story carries no weight at all
+    under the impact weighting, so it can never appear here.
+
+    One row is reserved for each side. Weight is ``|signed| ** p``, and
+    achievement-style news scores higher than disaster, so ranking by weight
+    alone returns three positive stories even on a day the index is falling -
+    which reads as a contradiction. Reserving a slot for the heaviest negative
+    and the heaviest positive shows the balance the level is actually made of.
+
+    Only reports already published at the point count: a past point is explained
+    by what was known then, not by what arrived afterwards.
+    """
+    if top <= 0 or not items:
+        return
+    horizon_hours = cfg.tau_hours * calculator.MAX_AGE_FACTOR
+    for point in window:
+        at = calculator.parse_ts(point.get("t"))
+        if at is None:
+            continue
+        weighted: List[Tuple[float, calculator.ScoredItem]] = []
+        total = 0.0
+        for item in items:
+            age_hours = (at - item.ts).total_seconds() / 3600.0
+            if age_hours < 0.0 or age_hours > horizon_hours:
+                continue
+            weight = math.exp(-_LN2 * age_hours / cfg.tau_hours)
+            if cfg.weight_power:
+                weight *= abs(item.signed) ** cfg.weight_power
+            weighted.append((weight, item))
+            total += weight
+        if total <= 0.0:
+            continue
+        weighted.sort(key=lambda pair: -pair[0])
+
+        chosen: List[Tuple[float, calculator.ScoredItem]] = []
+        taken: set = set()
+        for want_positive in (True, False):
+            for weight, item in weighted:
+                if (item.signed > 0.0) == want_positive and item.signed != 0.0:
+                    chosen.append((weight, item))
+                    taken.add(item.item_id)
+                    break
+        for pair in weighted:
+            if len(chosen) >= top:
+                break
+            if pair[1].item_id not in taken:
+                chosen.append(pair)
+                taken.add(pair[1].item_id)
+        chosen.sort(key=lambda pair: -pair[0])
+
+        named: List[Dict[str, Any]] = []
+        for weight, item in chosen[:top]:
+            label = labels.get(item.item_id) or {}
+            named.append({
+                "title": (label.get("title") or "")[:90],
+                "source": label.get("source") or "",
+                "signed": round(item.signed, 2),
+                "share": round(weight / total, 4),
+            })
+        point["top"] = named
 
 
 def build_news(rows: Iterable[Any], cfg: config_mod.RpiConfig,
@@ -350,6 +434,20 @@ def build_payload(conn: Any, cfg: config_mod.RpiConfig, schema_version: int,
                          start=now - timedelta(days=30.0)),
     }
 
+    windows = {
+        "today": bucket(today_points, timedelta(minutes=cfg.snapshot_minutes),
+                        item_times),
+        "1w": bucket(within(7.0), timedelta(hours=1), item_times),
+        "1m": bucket(within(30.0), timedelta(days=1), item_times),
+    }
+    # What the chart's tooltip names when a reader asks why a point sits where it
+    # does. Built here rather than in the page so the shares come from the same
+    # arithmetic as the level they are explaining.
+    labels = {row["id"]: {"title": row["title"] or "", "source": row["source"] or ""}
+              for row in analysis_rows}
+    for window in windows.values():
+        attach_contributors(window, items, labels, cfg, TOOLTIP_CONTRIBUTORS)
+
     return {
         "meta": {
             "generated_at": now.isoformat().replace("+00:00", "Z"),
@@ -372,12 +470,7 @@ def build_payload(conn: Any, cfg: config_mod.RpiConfig, schema_version: int,
                 conn, cfg, schema_version, now),
         },
         "summary": stats,
-        "windows": {
-            "today": bucket(today_points, timedelta(minutes=cfg.snapshot_minutes),
-                            item_times),
-            "1w": bucket(within(7.0), timedelta(hours=1), item_times),
-            "1m": bucket(within(30.0), timedelta(days=1), item_times),
-        },
+        "windows": windows,
         "news_windows": news_windows,
         "news": build_news(analysis_rows, cfg, conn=conn, limit=news_limit),
     }
