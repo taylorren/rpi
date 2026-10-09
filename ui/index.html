@@ -711,9 +711,16 @@ function renderNews(d) {
 
     // Merged duplicates are shown rather than hidden: an index nobody can audit
     // is unfalsifiable, and a silently collapsed story is exactly the sort of
-    // thing that would be impossible to spot later.
+    // thing that would be impossible to spot later. The count on its own would
+    // claim more than it knows, though: the index takes one score per story, so
+    // the number beside the title is *this* report's reading, not the event's. A
+    // duplicate member is never scored, so the other sources' readings are
+    // unknown - measured at 27% of members disagreeing in sign with their
+    // representative (tools/cluster_audit.py, DESIGN-HISTORY.md section 11).
+    // So the tooltip says what is true rather than implying agreement.
     const badge = n.dupes > 1
-      ? '<span class="dupe" title="same event reported by other sources">\u00d7' +
+      ? '<span class="dupe" title="scored from this report alone; the other ' +
+        'sources folded in are not scored, so their reading can differ">\u00d7' +
         n.dupes + "</span>"
       : "";
     const merged = (n.also_in && n.also_in.length)

@@ -341,6 +341,56 @@ a 0.5% offset, comfortably inside a 2% budget, so the verdict is ready.
 
 ---
 
+## 11. What the clustering hides, and why it was accepted
+
+**Question.** The index consumes one item per cluster, preferring the
+representative. Is one report a fair summary of the story it stands for?
+
+**Measurement.** `tools/cluster_audit.py`, written for this. It scores a sample
+of non-representative members and compares them with their representatives - and
+it prints the reference that number has to be read against, because "73%" means
+nothing on its own.
+
+| | |
+| --- | --- |
+| clusters / multi-member / members | 3,131 / 769 / 5,193 |
+| members that would flip their story's sign | **27%** (16 of 60) |
+| agreement, by drift band | 67 / 80 / 73 / 73% |
+| two arbitrary same-day stories | **49%** (1,561 stored pairs) |
+
+**Finding.** The clustering is doing real work: 73% against a 49% same-day
+reference means members of a cluster are genuinely more alike than two stories
+drawn from the same day. But the rate is **flat across the drift bands**, so the
+guess this tool was built to test - that long, theme-glued clusters are where the
+loss lives - is wrong. The cost of one score per cluster is paid everywhere,
+because a cluster holds a spread of framings of one event (CGTN averages +0.76
+signed, NYT -1.11) and the index takes one draw from that spread.
+
+The first run said otherwise. At 24 calls it produced a clean 100 / 100 / 83 / 67
+gradient, which is the story this section was going to tell. At 60 calls the
+gradient was gone. That is the sampling trap already recorded under "The tools
+this produced", walked into again by the person who wrote it down.
+
+**Decision: accept.** The disagreement is real, bounded, and cheaper to live with
+than to remove:
+
+* it is measured rather than assumed, and measured against a reference that says
+  the clustering still carries most of the signal;
+* removing it means scoring every duplicate member - 1,714 calls on this corpus -
+  and taking a consensus per cluster. That trades a known 27% spread for an
+  unknown amount of index churn, and it would put the index's score for a story
+  at odds with the one report a reader can actually click through to;
+* the direction is not knowable. A member and a representative can each be the
+  better reading of the same event, so "the member disagrees" is not "the index
+  is wrong".
+
+What changes is the claim, not the number. The UI's `×2` badge said "same event
+reported by other sources", which implies the others agree. It now says the score
+is this report's and that the others are not scored, so their reading can differ.
+The index itself is untouched.
+
+---
+
 ## What was rejected
 
 **Removing the decay kernel** - the proposal to score each story once and never
@@ -395,8 +445,9 @@ on when the analysis happened.
 | `tools/rescore_drift.py` | Is the instrument drifting, or is the news? |
 | `tools/anchor_ab.py` | Does a rubric change buy anything, and does it move the wrong stories? |
 | `tools/calibration_forecast.py` | How has the projected date moved as the sample grew? |
+| `tools/cluster_audit.py` | Is one report a fair summary of the story it stands for? |
 
-All four are read-only, and none of them writes to the database. Adopting a change
+All five are read-only, and none of them writes to the database. Adopting a change
 is always a separate, deliberate step - which is why every one of them prints what
 it measured and stops.
 
@@ -419,6 +470,11 @@ Two habits they share, both learned the hard way:
   scorer is not something this instrument can see - but the *asymmetry*
   (achievements outscoring disasters) is a scoring property, and it is where the
   next look should go.
+* **The clustering's spread.** One score per cluster discards a 27% sign
+  disagreement that is now measured, accepted, and stated in the UI. The untried
+  alternative is a consensus across a cluster's members - 1,714 scoring calls on
+  this corpus - which is the only way to find out whether the index would read
+  better for it.
 * **`p = 3`.** More event dominance, at the cost of being more hostage to a single
   story, including a mis-scored one: the largest story of a day would hold 17% of
   the weight.
