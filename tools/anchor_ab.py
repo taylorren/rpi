@@ -122,6 +122,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                              "evenly across the era: tests whether the top of the "
                              "scale is reachable at all, which an unbiased sample "
                              "cannot show because extreme events are rare")
+    parser.add_argument("--quiet", action="store_true",
+                        help="omit the per-story table and print only the summary")
     parser.add_argument("--min-summary", type=int, default=100,
                         help="shortest usable summary, in characters")
     parser.add_argument("--endpoint", default=None)
@@ -187,9 +189,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print("model  : {}  ({})".format(health.get("model"), endpoint))
     print()
 
-    header = "{:<58} {:>7} {:>7} {:>8}".format("story", "v1", "v2", "v2-v1")
-    print(header)
-    print("-" * len(header))
+    if not args.quiet:
+        header = "{:<58} {:>7} {:>7} {:>8}".format("story", "v1", "v2", "v2-v1")
+        print(header)
+        print("-" * len(header))
 
     pairs: List[Dict[str, Any]] = []
     failures = 0
@@ -211,8 +214,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             failures += 1
             continue
         pairs.append({"item": item, "before": before, "after": after})
-        print("{:<58} {:>7.2f} {:>7.2f} {:>+8.2f}".format(
-            " ".join((item["title"] or "?").split())[:58], v1, v2, v2 - v1))
+        if not args.quiet:
+            print("{:<58} {:>7.2f} {:>7.2f} {:>+8.2f}".format(
+                " ".join((item["title"] or "?").split())[:58], v1, v2, v2 - v1))
 
     print()
     if not pairs:
@@ -257,6 +261,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     movers = sorted(pairs, key=lambda p: -abs(
         p["after"]["impact_expected"] - p["before"]["impact_expected"]))
+    print()
+    print("signed impact - polarity x impact x scope weight, what the index eats:")
+    for name, key in (("v1 (re-run)", "before"), ("v2 (candidate)", "after")):
+        values = [calculator.POLARITY.get(str(p[key]["sentiment"]).lower(), 0)
+                  * float(p[key]["impact_expected"])
+                  * cfg.scope_weight(p[key]["scope"]) for p in pairs]
+        print("  {:<15} mean {:+.3f}  sd {:.3f}  min {:+.2f}  max {:+.2f}  "
+              "|signed| >= 5: {:.0%}".format(
+                  name, statistics.fmean(values), statistics.pstdev(values),
+                  min(values), max(values),
+                  sum(1 for v in values if abs(v) >= 5) / len(values)))
     print()
     print("biggest moves (v2 minus v1):")
     for entry in movers[:5]:
