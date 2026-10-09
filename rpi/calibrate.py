@@ -403,11 +403,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print()
 
     # Once b is frozen the useful question changes: not "how tightly is it
-    # pinned" but "is the frozen value still the right one". That is a recurring
-    # check rather than a one-off, because S(t) has no obligation to hold still -
-    # on this corpus it drifted about -0.2/week, which is what re-dated the
-    # projection for weeks while the estimate itself barely moved. These three
-    # numbers are what a weekly reading of this output is for.
+    # pinned" but "is the frozen value still the right one". Two different
+    # things can move it, and only one of them should: the INSTRUMENT changing
+    # (a source added or dropped, or the scoring model or schema replaced) is a
+    # reason to re-measure; the news drifting is not. A frozen b cannot tell a
+    # darkening world from a hardening instrument, so re-applying it to follow
+    # the drift would absorb the very movement the index exists to show. These
+    # numbers are for watching, not for tuning.
     if cfg.calibrated:
         latest_s = float(rows[-1]["s_value"])
         flow_day = drift_percent_per_day(latest_s - cfg.baseline_b, cfg)
@@ -418,8 +420,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("drift the frozen b leaves at the current flow, S(t) = {:+.4f}:".format(
             latest_s))
         print("  {:+.4f}%/day, {:+.1f}%/year".format(flow_day, flow_year))
-        print("  Re-run --apply once that is no longer clearly smaller than the")
-        print("  {:+.1f}%/year it removes.".format(abs(annual)))
+        print("  That is the reading, not a fault to tune away: re-applying here")
+        print("  would absorb the movement the index exists to show. Re-run --apply")
+        print("  only when the INSTRUMENT changed - a source added or dropped, or")
+        print("  the model or schema replaced. tools/rescore_drift.py tests the")
+        print("  last of those by re-scoring stored text and comparing.")
         print()
 
     if stats["ready"]:

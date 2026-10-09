@@ -40,9 +40,11 @@ DEFAULT_TAU_HOURS = 36.0
 # News media is structurally negative, so with b = 0 the index would decay
 # forever. The default is 0 only until ``python -m rpi.calibrate --apply`` writes
 # the measured mean of S(t) into ``rpi.config.json``, which is what the live site
-# runs on; see that module for the drift budget the value is judged against and
-# how to re-check it. Because S(t) is not stationary, the frozen value is a
-# reading of the corpus and is expected to be revisited rather than permanent.
+# runs on; see that module for the drift budget the value is judged against.
+# The frozen value should change only when the INSTRUMENT changes - a source
+# added or dropped, or the scoring model or schema replaced - never to follow the
+# news, because a frozen b cannot tell a darkening world from a hardening
+# instrument, and re-tuning it would absorb the movement the index exists to show.
 DEFAULT_BASELINE_B = 0.0
 
 DEFAULT_INDEX_BASE = 100.0
