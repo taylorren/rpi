@@ -104,17 +104,29 @@ except Exception:
 
 from . import config as config_mod, paths, schema, storage
 
-# The mean of S must be pinned this tightly before b can be trusted. This is a
-# drift budget, not a statistical convention: with k = 0.02 an error of ``d`` in
-# the mean mood drifts the index by about 0.2 * d percent per day, or 73 * d
-# percent per year. 0.10 therefore leaves at most +-0.02%/day, about +-7.6%/year,
-# against the ~30%/year the correction removes on the live series: the "worth
-# doing" band this module's own verdict table already accepts, and roughly a
-# fifth of a typical day's move (median 1-day move ~0.1%), so it stays invisible
-# on the chart. It was 0.05, which bought +-3.7%/year for about four times the
-# wait - and since S(t) is not stationary (it drifted ~-0.2/week on the live
-# series), the extra scatter a tighter target chases is not the dominant
-# uncertainty anyway. tools/window_dominance.py splits that out.
+# The mean of S must be pinned tightly enough that b's own error cannot move the
+# chart much. With the index as a thermometer that error is a *bounded offset* -
+# the level is multiplied by exp(c * se), and that does not grow with time - so
+# the budget is stated in level terms rather than as a drift per day. Two percent
+# is about a fifth of the index's own range at the current settings, and the live
+# estimate reaches 0.5%, so the verdict is comfortable by a wide margin.
+#
+# The target is therefore derived rather than hardcoded: LEVEL_BUDGET through c
+# gives the standard error that just fits inside it. Under the retired integrator
+# the same reasoning produced a fixed +-7.6%/year, which is where the 0.10 came
+# from; that number is kept below only as the fallback when c is zero and a level
+# budget cannot be expressed at all.
+LEVEL_BUDGET = 0.02
+
+
+def level_target_se(cfg: config_mod.RpiConfig) -> float:
+    """The standard error b must reach for its level offset to fit the budget."""
+    if cfg.c <= 0:
+        return TARGET_SE
+    return math.log(1.0 + LEVEL_BUDGET) / cfg.c
+
+
+# Fallback only: see LEVEL_BUDGET.
 TARGET_SE = 0.10
 
 # Correlation search bound, in snapshots. Comfortably past a 36h half-life while
@@ -324,9 +336,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--min-items", type=int, default=WARMUP_MIN_ITEMS,
                         help="coverage floor, in stories per snapshot, for the "
                              "warm-up cut (0 keeps every snapshot)")
-    parser.add_argument("--target-se", type=float, default=TARGET_SE,
-                        help="drift budget, in S units: the standard error b must "
-                             "reach before freezing is worth it (default %(default)s)")
+    parser.add_argument("--target-se", type=float, default=None,
+                        help="override the standard error b must reach; by default it "
+                             "is derived from LEVEL_BUDGET through c")
     parser.add_argument("--since", type=str, default=None, metavar="YYYY-MM-DD",
                         help="restrict the sample to snapshots from this day on - use it "
                              "when an input changed (a source added or dropped), so b is "
@@ -355,15 +367,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 1
         rows = kept
 
+    target_se = args.target_se if args.target_se else level_target_se(cfg)
     stats = fit(rows, cfg.snapshot_minutes, cfg.config_version, args.min_items,
-                args.target_se)
+                target_se)
     if stats.get("reason"):
         print("not enough data: {}".format(stats["reason"]))
         return 1
 
     mean = stats["mean"]
-    current = drift_percent_per_day(mean, cfg)
-    annual = ((1.0 + current / 100.0) ** 365 - 1.0) * 100.0
 
     print("samples        : {} snapshots over {:.1f} days".format(
         stats["n"], stats["days"]))
@@ -387,19 +398,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         stats["n_effective"], stats["n"]))
     print("standard error : {:.4f}   (95% CI {:+.4f} .. {:+.4f})".format(
         stats["se"], mean - stats["ci_half_width"], mean + stats["ci_half_width"]))
-    budget_year = abs(((1.0 + drift_percent_per_day(stats["target_se"], cfg) / 100.0)
-                       ** 365 - 1.0) * 100.0)
-    print("drift budget   : SE <= {:.2f}, i.e. residual drift up to {:.1f}%/year".format(
-        stats["target_se"], budget_year))
+    budget_offset = (math.exp(cfg.c * float(stats["target_se"])) - 1.0) * 100.0
+    print("level budget   : SE <= {:.2f}, i.e. b's error moves the level by <= {:.1f}%".format(
+        stats["target_se"], budget_offset))
     print()
-    print("drift if b = 0         : {:+.4f}%/day  ({:+.1f}%/year)".format(current, annual))
-    print("drift after calibration: {:+.4f}%/day  (by construction, if b is exact)"
-          .format(drift_percent_per_day(mean - mean, cfg)))
+    print("offset if b = 0        : {:.1f}% of level, every day, with no change"
+          .format((math.exp(cfg.c * mean) - 1.0) * 100.0))
+    print("offset after calibration: {:.1f}%  (by construction, if b is exact)"
+          .format((math.exp(cfg.c * (mean - mean)) - 1.0) * 100.0))
     print()
-    print("worst-case residual drift from the uncertainty in b:")
-    print("  {:+.4f}%/day, {:+.1f}%/year".format(
-        abs(drift_percent_per_day(stats["se"], cfg)),
-        abs(((1.0 + drift_percent_per_day(stats["se"], cfg) / 100.0) ** 365 - 1.0) * 100.0)))
+    print("worst-case level offset from the uncertainty in b:")
+    print("  {:.2f}%".format((math.exp(cfg.c * float(stats["se"])) - 1.0) * 100.0))
     print()
 
     # Once b is frozen the useful question changes: not "how tightly is it
@@ -448,34 +457,33 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print()
 
         # The point of the table: a quick calibration is not a cheap calibration.
-        # If the residual uncertainty left in b produces more drift than the bias
-        # being corrected, the exercise has made things worse, not better.
-        # Both sides must be annualised before comparing - mixing daily and annual
-        # units makes every option look bad.
-        bias_per_year = abs(annual)
+        # If the uncertainty left in b moves the level further than the offset it
+        # corrects, the exercise has made things worse, not better. Both sides are
+        # level percentages here, so they compare directly - no annualising, which
+        # was only ever needed because the old criterion was a rate.
+        bias_pct = abs((math.exp(cfg.c * mean) - 1.0) * 100.0)
         print("Tightening b costs time, and a loose estimate may be worse than none.")
-        print("The bias being corrected is {:.1f}%/year:".format(bias_per_year))
+        print("The offset being corrected is {:.1f}% of level:".format(bias_pct))
         print()
-        print("  {:>10}  {:>9}  {:>13}  {:>12}  {}".format(
-            "target SE", "days", "residual/day", "residual/yr", "verdict"))
+        print("  {:>10}  {:>9}  {:>13}  {}".format(
+            "target SE", "days", "level offset", "verdict"))
         # The chosen budget is always shown, so the trade-off the verdict is
         # judged on is visible rather than implied by a hardcoded ladder.
-        ladder = sorted({0.05, 0.10, 0.15, 0.25, 0.40, float(stats["target_se"])})
+        ladder = sorted({0.05, 0.10, 0.20, 0.40, 0.80, float(stats["target_se"])})
         for target in ladder:
             n_eff = (stats["sd"] / target) ** 2
             need = 2.0 * stats["tau_c_days"] * n_eff
-            per_day = abs(drift_percent_per_day(target, cfg))
-            per_year = abs(((1.0 + per_day / 100.0) ** 365 - 1.0) * 100.0)
-            if per_year < bias_per_year * 0.5:
+            offset = abs((math.exp(cfg.c * target) - 1.0) * 100.0)
+            if offset < bias_pct * 0.5:
                 verdict = "worth doing"
-            elif per_year <= bias_per_year * 1.5:
+            elif offset <= bias_pct * 1.5:
                 verdict = "no real gain"
             else:
                 verdict = "worse than nothing"
             chosen = ("  <- target"
                       if abs(target - float(stats["target_se"])) < 1e-9 else "")
-            print("  {:>10.2f}  {:>7.0f} d  {:>12.4f}%  {:>11.1f}%  {}{}".format(
-                target, need, per_day, per_year, verdict, chosen))
+            print("  {:>10.2f}  {:>7.0f} d  {:>12.2f}%  {}{}".format(
+                target, need, offset, verdict, chosen))
         print()
         print("So a calibration is only worth applying once the residual drift it")
         print("leaves behind is clearly smaller than the drift it removes.")

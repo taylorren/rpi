@@ -212,7 +212,8 @@ def calibration_progress(conn: Any, cfg: config_mod.RpiConfig,
 
     try:
         rows = storage.snapshots(conn, cfg.config_version, schema_version)
-        stats = calibrate.fit(rows, cfg.snapshot_minutes, cfg.config_version)
+        stats = calibrate.fit(rows, cfg.snapshot_minutes, cfg.config_version,
+                              target_se=calibrate.level_target_se(cfg))
     except Exception:  # pragma: no cover - defensive, see docstring
         return None
 

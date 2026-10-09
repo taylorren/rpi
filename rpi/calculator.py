@@ -13,12 +13,21 @@ where :math:`\\varepsilon` is polarity (+1 / 0 / -1), :math:`m_i` is the
 ``expected_score`` of the impact question (0-10) and :math:`w` is the scope
 weight from the config.
 
-Those contributions are combined into a decay-weighted mean - a *level*, not a
-flow - where older news fades with half-life ``tau_hours``:
+Those contributions are combined into a decay- and impact-weighted mean - a
+*level*, not a flow - where older news fades with half-life ``tau_hours`` and a
+story's influence scales with how consequential it is:
 
 .. math::
 
-    S(t) = \\frac{\\sum_i s_i 2^{-(t-t_i)/\\tau}}{\\sum_i 2^{-(t-t_i)/\\tau}}
+    S(t) = \\frac{\\sum_i s_i \\cdot |s_i|^{p} \\cdot 2^{-(t-t_i)/\\tau}}
+                {\\sum_i |s_i|^{p} \\cdot 2^{-(t-t_i)/\\tau}}
+
+The impact weighting (``weight_power``, :math:`p` above) is what keeps a day's
+biggest story visible. A plain mean over hundreds of stories is a crowd index in
+which no single event can hold more than a couple of percent of the weight, so
+the level has almost nothing to move on: measured on the live corpus the largest
+story of a day holds 2.4% of the weight at :math:`p = 0`, 8% at :math:`p = 2` and
+17% at :math:`p = 3`. Zero disables it and recovers the plain mean.
 
 The index then reads the *deviation from the baseline* directly:
 
@@ -48,9 +57,12 @@ worse for a month, because it only ever reads the present. That is the trade,
 and it is the intended one - the persistence of an event is carried by later
 reports about it, each scored on its own day.
 
-Neutral items are *included* with :math:`\\varepsilon = 0`: they dilute
-:math:`S(t)` toward zero, which is the right reading - a flood of unremarkable
-news is evidence the world is unremarkable.
+Neutral items carry :math:`\\varepsilon = 0`, so with the impact weighting on they
+contribute nothing at all - which is the right reading once the scoring rule is
+"score what this report changed": a report that changed nothing has no business
+moving a world index. With the weighting off (:math:`p = 0`) they dilute
+:math:`S(t)` toward zero instead, which is a different and weaker claim - that a
+flood of unremarkable news is evidence the world is unremarkable.
 
 Everything here is a pure function of the stored analyses plus the config, so
 the whole history can be recomputed in seconds after retuning ``k``, ``tau`` or
@@ -181,11 +193,17 @@ def build_items(rows: Iterable[Any], cfg: RpiConfig) -> List[ScoredItem]:
 
 def decayed_mean(items: Sequence[ScoredItem], times: Sequence[datetime],
                  at: datetime, tau_hours: float,
-                 fallback: float) -> float:
+                 fallback: float, weight_power: float = 0.0) -> float:
     """Decay-weighted mean signed impact at ``at``.
 
-    Returns ``fallback`` (the baseline) when nothing is in range, so silence
-    produces no drift.
+    ``weight_power`` adds an impact weighting on top of the decay: each story's
+    weight is multiplied by ``|signed| ** weight_power``, so a story twice as
+    consequential counts 2**p times as much and a neutral story (signed exactly
+    zero) contributes nothing at all. Zero disables it and recovers the plain
+    mean. The sign still comes from the story, never from the weight.
+
+    Returns ``fallback`` (the baseline) when nothing in range carries any
+    weight, so silence produces no movement.
     """
     horizon = timedelta(hours=tau_hours * MAX_AGE_FACTOR)
     lo = bisect.bisect_left(times, at - horizon)
@@ -202,6 +220,8 @@ def decayed_mean(items: Sequence[ScoredItem], times: Sequence[datetime],
         # setting would behave like a 25h half-life - which is what this code
         # used to do, contradicting the documented meaning of tau.
         weight = math.exp(-_LN2 * age_hours / tau_hours)
+        if weight_power:
+            weight *= abs(item.signed) ** weight_power
         numerator += item.signed * weight
         denominator += weight
 
@@ -231,7 +251,8 @@ def build_series(items: Sequence[ScoredItem], cfg: RpiConfig, start: datetime,
     series: List[Snapshot] = []
 
     while moment <= end:
-        s_value = decayed_mean(items, times, moment, cfg.tau_hours, baseline)
+        s_value = decayed_mean(items, times, moment, cfg.tau_hours, baseline,
+                               cfg.weight_power)
 
         horizon = timedelta(hours=cfg.tau_hours * MAX_AGE_FACTOR)
         low = bisect.bisect_left(times, moment - horizon)

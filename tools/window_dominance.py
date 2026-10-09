@@ -59,14 +59,17 @@ TITLE_WIDTH = 76
 
 def window_view(items: Sequence[calculator.ScoredItem],
                 at: datetime,
-                tau_hours: float) -> Tuple[float, List[Tuple[float, float, Any]],
-                                            float, float]:
+                tau_hours: float,
+                weight_power: float = 0.0) -> Tuple[float, List[Tuple[float, float, Any]],
+                                                    float, float]:
     """Decay-weight picture of the window at ``at``.
 
-    Mirrors ``calculator.decayed_mean`` exactly - same horizon, same
-    half-life formula, same rejection of future-stamped items - but returns
-    the shares instead of the ratio, so callers can see *who* holds the
-    weight rather than only what it averages to.
+    Mirrors ``calculator.decayed_mean`` exactly - same horizon, same half-life
+    formula, same impact weighting, same rejection of future-stamped items - but
+    returns the shares instead of the ratio, so callers can see *who* holds the
+    weight rather than only what it averages to. With ``weight_power`` on, a
+    story's share is its impact-weighted share, which is the one the level
+    actually responds to.
 
     Returns ``(total_weight, entries, mean_age_days, effective_stories)``.
     Entries are ``(weight, age_hours, item)``, largest first.
@@ -81,6 +84,8 @@ def window_view(items: Sequence[calculator.ScoredItem],
         if age_hours < 0.0 or age_hours > horizon_hours:
             continue
         weight = math.exp(-_LN2 * age_hours / tau_hours)
+        if weight_power:
+            weight *= abs(item.signed) ** weight_power
         entries.append((weight, age_hours, item))
         total += weight
         weighted_age += weight * age_hours
@@ -332,7 +337,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             at = last_moment  # mid-day run: do not project into the future
         if at < series[0][0]:
             continue
-        total, entries, mean_age, effective = window_view(items, at, cfg.tau_hours)
+        total, entries, mean_age, effective = window_view(
+            items, at, cfg.tau_hours, cfg.weight_power)
         if total <= 0.0:
             continue
         view = {

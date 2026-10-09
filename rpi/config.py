@@ -22,7 +22,10 @@ from typing import Any, Dict, Mapping, Optional
 # base * exp(c * (S - b)) - a reading of the mood against normal - instead of an
 # integral of the deviation, so snapshots from the two formulas are different
 # series rather than different points of one.
-CONFIG_VERSION = 3
+#
+# 3 -> 4 (2026-10-09): the mood gained an impact weighting, so the same stories
+# now produce a different S(t) and therefore a different level.
+CONFIG_VERSION = 4
 
 # How much a news item matters according to how far its effects reach.
 DEFAULT_SCOPE_WEIGHTS: Dict[str, float] = {
@@ -35,12 +38,11 @@ DEFAULT_SCOPE_WEIGHTS: Dict[str, float] = {
 # Sensitivity of the thermometer: the level is base * exp(c * (S - b)), so c
 # turns a mood deviation into a level move. It is not a rate - there is no
 # per-day term any more - so it is set against the *observed* spread of the mood
-# rather than against a full-scale day. On the live corpus (2026-10-09,
-# schema_version 2) the mood runs about +-0.30 from normal, so 0.16 puts the
-# index about 5% either side, and a one-standard-deviation mood (0.11) is a 1.7%
-# move. Re-measure it whenever the mood's spread changes; p-weighting would
-# widen that spread severalfold.
-DEFAULT_C = 0.16
+# rather than against a full-scale day, and it has to be re-measured whenever
+# that spread changes. Measured values: 0.16 for the unweighted mood (spread
+# 0.59) and 0.0243 with weight_power = 2 (spread 2.00), each putting the index
+# about 5% either side of 100.
+DEFAULT_C = 0.0243
 
 # Sensitivity of the retired integrator. Kept because rpi.calibrate still
 # expresses its drift budget through it - with k = 0.02 a full-scale day moved
@@ -52,6 +54,22 @@ DEFAULT_K = 0.02
 # Decay half-life for news relevance, in hours. Controls how quickly old news
 # stops influencing the index.
 DEFAULT_TAU_HOURS = 36.0
+
+# Impact weighting: a story's influence is multiplied by |signed impact|^p, so a
+# story twice as consequential counts 2^p times as much. p = 0 disables it and
+# recovers the plain decay-weighted mean.
+#
+# It exists because a mean over hundreds of stories is dominated by the crowd:
+# on the live corpus the largest story of a day holds 2.4% of the decay weight at
+# p = 0, 8% at p = 2 and 17% at p = 3. Weighting by impact is also what the
+# scoring rule already implies - a report that changed nothing should not count
+# the same as one that changed a great deal - and it gives the level something to
+# move on, because a neutral story now contributes exactly nothing instead of
+# diluting the mood toward zero.
+#
+# Raising it widens the mood's spread, so b and c must be re-measured with it: at
+# p = 2 the spread is about 4.6x the unweighted one.
+DEFAULT_WEIGHT_POWER = 2.0
 
 # Reference level the index treats as "normal news". BOOTSTRAP VALUE.
 # News media is structurally negative, so with b = 0 the index would decay
@@ -107,6 +125,7 @@ class RpiConfig:
     k: float = DEFAULT_K
     c: float = DEFAULT_C
     tau_hours: float = DEFAULT_TAU_HOURS
+    weight_power: float = DEFAULT_WEIGHT_POWER
     baseline_b: float = DEFAULT_BASELINE_B
     snapshot_minutes: int = DEFAULT_SNAPSHOT_MINUTES
     scope_weights: Dict[str, float] = field(
