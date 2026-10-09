@@ -257,8 +257,46 @@ def _iso_minutes_ago(minutes: float) -> str:
     return moment.isoformat().replace("+00:00", "Z")
 
 
-def _representative_without_analysis() -> str:
-    """SQL for "a cluster representative still missing its analysis".
+def _pick_order(item: str = "i", cluster: str = "c") -> str:
+    """Ordering that elects which report speaks for an outlet in a story.
+
+    Written once because the work queue and the index have to agree on the pick:
+    if they disagree, the queue scores reports the index never reads and leaves
+    the index waiting for ones it does.
+    ``rpi.dedupe._reelect_representatives`` elects a cluster representative with
+    the same rule one level up - richest text wins, ties broken by id so the
+    choice stays deterministic.
+    """
+    return ("CASE WHEN {item}.id = {cluster}.representative THEN 0 ELSE 1 END,"
+            " LENGTH(COALESCE({item}.summary, '')) DESC,"
+            " {item}.id ASC").format(item=item, cluster=cluster)
+
+
+def _pick_predicate(per_source: bool) -> str:
+    """SQL for "this item is one the index reads", given the mode.
+
+    Off, a cluster contributes one item - its representative - and an unclustered
+    item is its own story. On, every outlet contributes one item per story, so
+    the same election is applied inside each (cluster, source) group.
+    """
+    if not per_source:
+        return ("NOT EXISTS (SELECT 1 FROM cluster_members m\n"
+                "                WHERE m.item_id = i.id AND m.is_representative = 0)")
+    return ("(NOT EXISTS (SELECT 1 FROM cluster_members m\n"
+            "                 WHERE m.item_id = i.id)\n"
+            "     OR i.id = (SELECT i2.id FROM cluster_members m2\n"
+            "                  JOIN items i2 ON i2.id = m2.item_id\n"
+            "                  JOIN clusters c2 ON c2.cluster_id = m2.cluster_id\n"
+            "                 WHERE m2.cluster_id = (SELECT m3.cluster_id\n"
+            "                                          FROM cluster_members m3\n"
+            "                                         WHERE m3.item_id = i.id)\n"
+            "                   AND i2.source = i.source\n"
+            "                 ORDER BY " + _pick_order("i2", "c2") + "\n"
+            "                 LIMIT 1))")
+
+
+def _needs_analysis(per_source: bool = False) -> str:
+    """SQL for "an item the index reads that has no analysis yet".
 
     One definition, shared by the work queue and both gauges, because the queue
     and the backlog gauge disagreeing is exactly how a permanently stuck backlog
@@ -268,8 +306,7 @@ def _representative_without_analysis() -> str:
     """
     return ("NOT EXISTS (SELECT 1 FROM analyses a\n"
             "                  WHERE a.item_id = i.id AND a.schema_version = ?)\n"
-            "AND NOT EXISTS (SELECT 1 FROM cluster_members m\n"
-            "                WHERE m.item_id = i.id AND m.is_representative = 0)")
+            "AND " + _pick_predicate(per_source))
 
 
 def pending_items(conn: sqlite3.Connection, schema_version: int,
@@ -277,7 +314,8 @@ def pending_items(conn: sqlite3.Connection, schema_version: int,
                   retry_failed: bool = False,
                   newest_first: bool = False,
                   since: Optional[str] = None,
-                  until: Optional[str] = None) -> List[sqlite3.Row]:
+                  until: Optional[str] = None,
+                  per_source: bool = False) -> List[sqlite3.Row]:
     """Items worth a model call now, oldest published first by default.
 
     Age ordering matters: news is a time series, and analysing oldest-first
@@ -292,9 +330,13 @@ def pending_items(conn: sqlite3.Connection, schema_version: int,
     cannot overlap. Stamps are fixed-width ISO-8601 UTC, so a date prefix
     compares correctly as a string and no parsing is needed.
 
-    Items already known to be duplicates are skipped, so a story covered by six
-    outlets costs one analysis rather than six. Items that have not been
-    clustered yet are treated as representatives and are analysed.
+    Which items are worth a call depends on the mode. Off, duplicates are
+    skipped, so a story covered by six outlets costs one analysis rather than
+    six, and an item that has not been clustered yet is treated as a
+    representative and analysed. On, every outlet's report of a story is worth
+    one call, so the same story costs one per outlet - see
+    ``DEFAULT_ITEMS_PER_SOURCE``. Both modes share one election, so the queue can
+    never score a report the index does not read, or skip one it does.
 
     A previous failure is a delay, not a verdict: an item comes back once
     ``ANALYSIS_RETRY_MINUTES`` have passed since its last attempt, up to
@@ -303,7 +345,7 @@ def pending_items(conn: sqlite3.Connection, schema_version: int,
     look, e.g. straight after fixing the scoring service.
     """
     sql = [
-        "SELECT i.* FROM items i WHERE " + _representative_without_analysis(),
+        "SELECT i.* FROM items i WHERE " + _needs_analysis(per_source),
     ]
     params: List[Any] = [schema_version]
     if not retry_failed:
@@ -373,8 +415,9 @@ def record_analysis_error(conn: sqlite3.Connection, item_id: str,
         (item_id, schema_version, error[:500], utcnow_iso()))
 
 
-def pending_count(conn: sqlite3.Connection, schema_version: int) -> int:
-    """Representatives awaiting analysis that the retry policy has not given up on.
+def pending_count(conn: sqlite3.Connection, schema_version: int,
+                  per_source: bool = False) -> int:
+    """Items the index reads that are awaiting analysis, retry policy permitting.
 
     This is the backlog gauge the health check and the page's banner read: it
     counts work the analyser is expected to consume, including a failure that is
@@ -385,7 +428,7 @@ def pending_count(conn: sqlite3.Connection, schema_version: int) -> int:
     Parked items are deliberately *not* counted here; they are reported by
     :func:`failed_count`, so the invariant is::
 
-        pending_count + failed_count == representatives with no analysis
+        pending_count + failed_count == items the index reads with no analysis
 
     Before the two were defined together this gauge included parked items, so it
     could never fall to zero after a transient fault and the alert fired daily
@@ -393,7 +436,7 @@ def pending_count(conn: sqlite3.Connection, schema_version: int) -> int:
     """
     row = conn.execute(
         "SELECT COUNT(*) AS n FROM items i WHERE "
-        + _representative_without_analysis()
+        + _needs_analysis(per_source)
         + "\nAND NOT EXISTS (SELECT 1 FROM analysis_errors e"
           "  WHERE e.item_id = i.id AND e.schema_version = ?"
           "  AND e.attempts >= ?)",
@@ -401,18 +444,18 @@ def pending_count(conn: sqlite3.Connection, schema_version: int) -> int:
     return int(row["n"]) if row else 0
 
 
-def failed_count(conn: sqlite3.Connection, schema_version: int) -> int:
-    """Representatives parked after exhausting the analysis retry policy.
+def failed_count(conn: sqlite3.Connection, schema_version: int,
+                 per_source: bool = False) -> int:
+    """Items the index reads that are parked after exhausting the retry policy.
 
     These are missing from the index and no scheduled run will pick them up
     again, so they are worth saying out loud rather than folding into the
     backlog: the fix is either ``--retry-failed`` or accepting the loss. Scoped
-    to representatives, matching :func:`pending_count`, because a duplicate
-    member is never analysed and its failure says nothing about the index.
+    to the same items :func:`pending_count` counts, so the two add up.
     """
     row = conn.execute(
         "SELECT COUNT(*) AS n FROM items i WHERE "
-        + _representative_without_analysis()
+        + _needs_analysis(per_source)
         + "\nAND EXISTS (SELECT 1 FROM analysis_errors e"
           "  WHERE e.item_id = i.id AND e.schema_version = ?"
           "  AND e.attempts >= ?)",
@@ -429,27 +472,43 @@ def last_analysis_time(conn: sqlite3.Connection,
     return str(row["t"]) if row and row["t"] else None
 
 
-def analysed_rows(conn: sqlite3.Connection, schema_version: int) -> List[sqlite3.Row]:
+def analysed_rows(conn: sqlite3.Connection, schema_version: int,
+                  per_source: bool = False) -> List[sqlite3.Row]:
     """Analysed items with the fields the index calculation and audit list need.
 
-    Where an item belongs to a cluster, the cluster's ``first_published`` is
-    exposed as the event time: a story should enter the time series when it
-    first broke, not when the slowest outlet got round to covering it.
+    Off, a cluster contributes at most one analysed item: the story enters the
+    series when it first broke (the cluster's ``first_published``) and is scored
+    by its representative. Preferring the current representative while falling
+    back to any already analysed member means re-electing a richer representative
+    cannot temporarily remove the story from the index.
 
-    A cluster contributes at most one analysed item. Prefer the current
-    representative, but fall back to any already analysed member so re-electing
-    a richer representative cannot temporarily remove the story from the index.
+    On, every outlet contributes one item per cluster, elected by the same rule
+    the work queue uses, and each enters at *its own* published time so a story's
+    weight builds as coverage arrives. ``cluster_first_published`` is then
+    deliberately NULL rather than the cluster's earliest sighting: with one report
+    per outlet there is no single moment the story entered, and a cluster-level
+    timestamp would stamp six reports with the time of the first.
     """
+    if per_source:
+        group_key = ("CASE WHEN m.cluster_id IS NULL THEN i.id"
+                     " ELSE CAST(m.cluster_id AS TEXT) || '|' || i.source END")
+        event_time = "NULL"
+        election = "representative_rank ASC, text_length DESC, id ASC"
+    else:
+        group_key = "COALESCE(CAST(m.cluster_id AS TEXT), i.id)"
+        event_time = "c.first_published"
+        election = "representative_rank ASC, analyzed_at DESC, id ASC"
     return list(conn.execute(
         "WITH analysed AS ("
         " SELECT i.id, i.title, i.link, i.source, i.published, i.fetched_at,"
         "        a.analyzed_at, a.sentiment, a.impact_expected, a.impact, a.scope,"
         "        m.cluster_id, m.is_representative,"
-        "        c.first_published AS cluster_first_published,"
+        "        {event_time} AS cluster_first_published,"
         "        c.member_count AS cluster_member_count,"
-        "        COALESCE(CAST(m.cluster_id AS TEXT), i.id) AS group_key,"
+        "        {group_key} AS group_key,"
         "        CASE WHEN m.item_id IS NULL OR i.id = c.representative"
-        "             THEN 0 ELSE 1 END AS representative_rank"
+        "             THEN 0 ELSE 1 END AS representative_rank,"
+        "        LENGTH(COALESCE(i.summary, '')) AS text_length"
         " FROM analyses a"
         " JOIN items i ON i.id = a.item_id"
         " LEFT JOIN cluster_members m ON m.item_id = i.id"
@@ -458,7 +517,7 @@ def analysed_rows(conn: sqlite3.Connection, schema_version: int) -> List[sqlite3
         "), ranked AS ("
         " SELECT *, ROW_NUMBER() OVER ("
         "   PARTITION BY group_key"
-        "   ORDER BY representative_rank ASC, analyzed_at DESC, id ASC"
+        "   ORDER BY {election}"
         " ) AS row_number"
         " FROM analysed"
         ")"
@@ -468,7 +527,8 @@ def analysed_rows(conn: sqlite3.Connection, schema_version: int) -> List[sqlite3
         "       cluster_member_count"
         " FROM ranked"
         " WHERE row_number = 1"
-        " ORDER BY COALESCE(cluster_first_published, published, fetched_at) ASC",
+        " ORDER BY COALESCE(cluster_first_published, published, fetched_at) ASC"
+        .format(event_time=event_time, group_key=group_key, election=election),
         (schema_version,)))
 
 

@@ -271,7 +271,8 @@ def build_payload(conn: Any, cfg: config_mod.RpiConfig, schema_version: int,
                     int(row["item_count"])))
 
     # One query feeds both the index series and the audit list.
-    analysis_rows = storage.analysed_rows(conn, schema_version)
+    analysis_rows = storage.analysed_rows(conn, schema_version,
+                                          per_source=cfg.items_per_source)
     items = calculator.build_items(analysis_rows, cfg)
 
     # Computed on the full snapshot series, so the average means the same thing
@@ -289,19 +290,47 @@ def build_payload(conn: Any, cfg: config_mod.RpiConfig, schema_version: int,
     ]
     stats = calculator.summarise(items, series, cfg, now=now)
 
-    # A story covered by six outlets is one item in the index, not six.
-    stats["duplicates_removed"] = sum(
-        max(int(calculator.row_get(row, "cluster_member_count") or 1) - 1, 0)
-        for row in analysis_rows)
+    # How many reports the index does not read. With items_per_source on, a story
+    # counts once per outlet, so what is folded away is the extra reports from an
+    # outlet that wrote several about it; off, it is every report but the
+    # representative's. Either way it is the same kind of thing - reports that
+    # exist in the corpus and carry no weight - so the page keeps one figure.
+    read_per_story: Optional[Dict[int, int]] = None
+    if cfg.items_per_source:
+        read_per_story = {int(cid): int(n) for cid, n in conn.execute(
+            "SELECT m.cluster_id, COUNT(DISTINCT i.source)"
+            "  FROM cluster_members m JOIN items i ON i.id = m.item_id"
+            " GROUP BY m.cluster_id")}
+    folded = 0
+    counted: set = set()
+    for row in analysis_rows:
+        cluster_id = calculator.row_get(row, "cluster_id")
+        if cluster_id is None:
+            continue
+        key = int(cluster_id)
+        # Once per cluster: every row of a multi-source story carries the same
+        # member_count, so counting per row would multiply the loss by the number
+        # of outlets that covered it.
+        if key in counted:
+            continue
+        counted.add(key)
+        members = int(calculator.row_get(row, "cluster_member_count") or 1)
+        kept = 1
+        if read_per_story is not None:
+            kept = read_per_story.get(key, 1)
+        folded += max(members - kept, 0)
+    stats["duplicates_removed"] = folded
     # Backlog. A number that keeps climbing is the signature of a scoring
     # service that has stopped consuming work, which every other stage would
     # hide by continuing to succeed.
-    stats["pending"] = storage.pending_count(conn, schema_version)
+    stats["pending"] = storage.pending_count(conn, schema_version,
+                                            per_source=cfg.items_per_source)
     # Parked failures are a different problem with a different fix, so they are
     # published separately rather than folded into the backlog - folding them in
     # is what kept the backlog permanently non-zero after the 2026-09-24 CUDA
     # fault, which turned the health check into background noise.
-    stats["failed"] = storage.failed_count(conn, schema_version)
+    stats["failed"] = storage.failed_count(conn, schema_version,
+                                           per_source=cfg.items_per_source)
 
     item_times = [item.ts for item in items]
 

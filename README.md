@@ -98,10 +98,13 @@ they are simply worth zero on the day.
 
 ## Step 2: from stories to a mood
 
-If we simply averaged every story ever, the index would barely move and would never forget anything. Instead, **older news fades**. A story's influence halves roughly every 36
-hours, which is the *half-life*: $S(t) = \frac{\sum_i s_i \cdot 2^{-(t - t_i)/36}}{\sum_i 2^{-(t - t_i)/36}}$
+If we simply averaged every story ever, the index would barely move and would never forget anything. Instead, **older news fades**, and a story that mattered more counts for more:
 
-In words: a decay-weighted average of every recent story's signed impact, where a story from 36 hours ago counts half as much as one from now, and a story from three days ago counts about a quarter as much.
+$S(t) = \frac{\sum_i w_i s_i}{\sum_i w_i}$, where $w_i = 2^{-(t - t_i)/36} \times |s_i|^2$
+
+In words: a decay-weighted average of every recent story's signed impact, where a story from 36 hours ago counts half as much as one from now, and a story from three days ago counts about a quarter as much — weighted again by how consequential the story was, so a story twice as consequential counts four times as much, and a story that changed nothing counts not at all.
+
+**A story is counted once per outlet that covered it.** An event six outlets reported contributes six reports, while one outlet writing six articles about it still contributes one: being widely reported is being heavily weighted, and a feed that writes more does not thereby weigh more. Each report enters at the time it was published, so a story's weight builds as coverage arrives, rather than arriving all at once when the story broke.
 
 $S(t)$, pronounced "the mood", is the answer to *"how is the world doing right now?"* on
 the same −10 to +10 scale. It is worth looking at on its own — it's the far-right column of the stats on the site.
@@ -119,16 +122,17 @@ $RPI = 100 \times \exp\left(c \times (S(t) - b)\right)$
 
 | Symbol | Value   | Meaning                                                    |
 | ------ | ------- | ---------------------------------------------------------- |
-| $c$    | 0.16    | sensitivity — how far a deviation moves the level          |
+| $c$    | 0.0243  | sensitivity — how far a deviation moves the level          |
 | $S(t)$ | varies  | the mood, −10 to +10                                       |
-| $b$    | −0.3314 | the baseline: what counts as "normal news"                 |
+| $b$    | +0.3345 | the baseline: what counts as "normal news"                 |
 | $\tau$ | 36 h    | decay half-life — news older than this counts half as much |
+| $p$    | 2       | impact weighting — influence scales with the story's impact |
 
 ### Reading it in plain English
 
 - **If the mood is normal** — that is, $S(t)$ equals $b$ — the level is exactly **100**, however much news there is.
-- **A one-standard-deviation mood** (about 0.11 on the live corpus) is a move of about **1.7%**.
-- **The mood at its observed extreme** (about ±0.3 from normal) puts the index about **5%** either side of 100.
+- **A one-standard-deviation mood** (0.54 on the live corpus) is a move of about **1.3%**.
+- **A week of ordinary news** moves the level about **2.5%**, and a month about **10%** — both measured on the live series, and both larger than they were before a story started counting once per outlet.
 
 So the index measures **how unusual the news is**, not how bad. This is the whole design.
 
@@ -181,7 +185,7 @@ thermometer that difference is a level about **3%** apart.)
 The baseline corrects for it. $b$ is meant to be set to the average mood over a long
 settling-in period, so that the index responds to news being *unusual* rather than to news being *news*.
 
-> **Current status: $b$ is frozen at −0.3314** — the mean mood measured over the era in which all six sources were present, on the rubric in use, written into `rpi.config.json` once the estimate came inside its budget. The banner that said "$b$ is still 0" is gone, and the level is no longer provisional in the way it was. It is not permanent, but it is also not meant to be re-tuned to follow the news: a frozen $b$ cannot tell a darkening world from a hardening instrument, so re-applying it whenever the mood drifts would absorb the very movement the index exists to show. It should change only when the *instrument* changes — a source added or dropped, or the scoring model or schema replaced — and `tools/rescore_drift.py` is how the last of those is tested.
+> **Current status: $b$ is frozen at +0.3345** — the mean mood measured over the era in which all six sources were present, on the aggregation in use, written into `rpi.config.json` once the estimate came inside its budget. It has been re-measured twice since, both times because the *instrument* changed rather than the news: once when the mood gained an impact weighting, and once when a story began counting once per outlet instead of once in total, which widened the mood's spread by 37% and moved the mean with it. The banner that said "$b$ is still 0" is gone, and the level is no longer provisional in the way it was. It is not permanent, but it is also not meant to be re-tuned to follow the news: a frozen $b$ cannot tell a darkening world from a hardening instrument, so re-applying it whenever the mood drifts would absorb the very movement the index exists to show. It should change only when the *instrument* changes — a source added or dropped, or the scoring model, schema or aggregation replaced — and `tools/rescore_drift.py` is how the last of those is tested.
 > 
 > **How long is "while the data accumulates"? Shorter than it looks, and the target is a choice.** The mood is a smoothed average with a half-life measured in days, so consecutive readings carry almost the same information. Measured on the live series it decorrelates in about half a day, so a week of running buys roughly a dozen independent observations, however many readings the snapshot count suggests. How long it then takes is decided by how tightly you insist on pinning the mean, because the target is a drift budget rather than a statistical threshold: at the default of **0.10** in $S$ units — about ±7.6% a year of residual drift, against roughly 30% a year of bias removed on the current series — a few weeks of history is enough. Halving that target quadruples the wait, for drift that is already invisible on the chart. The banner quotes a projected date for it: read it as a range, because it is re-fitted as data arrives and moves while the sample is young (on the evidence so far, anywhere from late 2026 to late 2027).
 > 

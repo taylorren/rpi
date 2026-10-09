@@ -403,6 +403,59 @@ The index itself is untouched.
 
 ---
 
+## 12. A story counts once per outlet
+
+**Question.** Section 11 measured what one score per story costs - 27% of sampled
+members would flip their story's sign - and accepted it. But that accepted the
+*cost*; the cost had two causes, the collapse and the corpus, and only the second
+is out of reach. Could the collapse be removed without modelling anything?
+
+**Measurement.** `tools/scheme_ab.py` builds both aggregations from the same
+stored scores, so no news enters the comparison. B is the proposed one: one item
+per (cluster, source) pair, elected the way a cluster representative is elected
+one level up, each entering at its own published time. `tools/score_members.py`
+supplied the inputs - 912 pairs, 0 failures, 1,786 ms each - writing only
+`analyses` rows for non-representative members, and was verified to leave the
+index bit-identical (same 1,631 snapshots, same sha256, same level) before and
+after.
+
+| | A | B |
+| --- | --- | --- |
+| index items | 3,131 | **4,045** |
+| sd(S) | 0.3935 | **0.5404** |
+| median daily move | 0.47% | **0.60%** |
+| b | 0.4968 | **0.3345** |
+| ready | yes | **yes** - se 0.2048 against a budget of 0.8149 |
+
+**Finding.** Three things, and one of them was not the point of the exercise.
+
+* **The election rule was suppressing feeds that write short summaries.** bbc-world
+  holds 8.6% of the items and 9.2% of the pairs but only **2.2%** of A's weight,
+  against 10.3% of B's - because the representative is the *longest* summary, and
+  bbc's are a fifth the length of Guardian's. A defect in A that nobody had looked
+  for, found by asking a different question.
+* **The reports B counts and A drops entirely are, at the top, the Nobel prizes** -
+  the highest-magnitude positive stories in the corpus, +5.4 to +7.4.
+* **It does not repair the case that started this.** The Pillay award sits in three
+  clusters. A reads the event as clearly bad news (level x0.99750); B reads it as
+  essentially neutral (x0.99993) - a 36x reduction - but **not** positive, because
+  the cluster holding the -6.66 contains two reports and both are negative hooks.
+  Per-outlet weighting cannot help when one outlet, holding one hook, *is* the
+  whole cluster.
+
+**Decision: adopt.** A story now counts once per outlet that covered it. The cost
+is a scoring call per pair rather than per story, and it changes the units of S,
+so `b` was re-measured (0.4968 -> 0.3345) and `CONFIG_VERSION` went to 5. `c` was
+deliberately left at 0.0243: the mood's spread is 37% wider, so the level swings
+about that much further - one week 1.7% -> 2.5%, one month 5.8% -> 10.6% - which
+is the direction section 8 asked for when the chart was too smooth to read.
+Scaling `c` by the spread ratio (0.0177) would hold the amplitude and leave only
+the shape different; that stays a live option.
+
+The clustering is untouched, and so is the other half of section 11's problem.
+
+---
+
 ## What was rejected
 
 **Removing the decay kernel** - the proposal to score each story once and never
@@ -458,10 +511,14 @@ on when the analysis happened.
 | `tools/anchor_ab.py` | Does a rubric change buy anything, and does it move the wrong stories? |
 | `tools/calibration_forecast.py` | How has the projected date moved as the sample grew? |
 | `tools/cluster_audit.py` | Is one report a fair summary of the story it stands for? |
+| `tools/scheme_ab.py` | What would the index read if a story counted once per outlet? |
+| `tools/score_members.py` | Supply that scheme's inputs - the one tool here that writes |
 
-All five are read-only, and none of them writes to the database. Adopting a change
-is always a separate, deliberate step - which is why every one of them prints what
-it measured and stops.
+All but `score_members.py` are read-only. That one writes only `analyses` rows for
+non-representative members, which the index ignores until a scheme reads them -
+verified by hashing the series before and after. Adopting a change is always a
+separate, deliberate step, which is why every one of them prints what it measured
+and stops.
 
 Two habits they share, both learned the hard way:
 
@@ -482,11 +539,13 @@ Two habits they share, both learned the hard way:
   scorer is not something this instrument can see - but the *asymmetry*
   (achievements outscoring disasters) is a scoring property, and it is where the
   next look should go.
-* **The clustering's spread.** One score per cluster discards a 27% sign
-  disagreement that is now measured, accepted, and stated in the UI. The untried
-  alternative is a consensus across a cluster's members - 1,714 scoring calls on
-  this corpus - which is the only way to find out whether the index would read
-  better for it.
+* **The clustering's fragmentation.** One event can sit in several clusters - the
+  Pillay award sits in three - and section 12's per-outlet weighting cannot repair
+  that, because each fragment is scored on its own. This is the half of section
+  11's problem that survived, and it is the next thing worth measuring.
+* **`c` on the new spread.** Left at 0.0243, so the level swings 37% further than
+  it did. If that reads as too much, 0.0177 holds the amplitude where it was and
+  leaves only the shape different.
 * **`p = 3`.** More event dominance, at the cost of being more hostage to a single
   story, including a mis-scored one: the largest story of a day would hold 17% of
   the weight.

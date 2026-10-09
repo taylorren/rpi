@@ -247,7 +247,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     conn = storage.connect(args.db)
     try:
         rows = storage.snapshots(conn, cfg.config_version, args.schema_version)
-        analysed = storage.analysed_rows(conn, args.schema_version)
+        analysed = storage.analysed_rows(conn, args.schema_version,
+                                         per_source=cfg.items_per_source)
     finally:
         conn.close()
 

@@ -1,15 +1,16 @@
 {
   "base_level": 100.0,
-  "baseline_b": 0.4968,
+  "baseline_b": 0.3345,
   "c": 0.0243,
   "calibrated": true,
-  "config_version": 4,
+  "config_version": 5,
   "dedupe_api_threshold": 0.5,
   "dedupe_auto_merge": 0.8,
   "dedupe_max_api_per_item": 3,
   "dedupe_reject_floor": 0.25,
   "dedupe_window_hours": 72.0,
   "endpoint": "http://127.0.0.1:8765",
+  "items_per_source": true,
   "k": 0.02,
   "scope_weights": {
     "global": 1.0,

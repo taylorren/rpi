@@ -25,7 +25,12 @@ from typing import Any, Dict, Mapping, Optional
 #
 # 3 -> 4 (2026-10-09): the mood gained an impact weighting, so the same stories
 # now produce a different S(t) and therefore a different level.
-CONFIG_VERSION = 4
+#
+# 4 -> 5 (2026-10-09): a story is counted once per outlet that covered it, not
+# once in total. The index reads one report per (cluster, source) pair instead of
+# one per cluster, so the same stories produce a different S(t) - 37% wider - and
+# b was re-measured for it. See DEFAULT_ITEMS_PER_SOURCE and tools/scheme_ab.py.
+CONFIG_VERSION = 5
 
 # How much a news item matters according to how far its effects reach.
 DEFAULT_SCOPE_WEIGHTS: Dict[str, float] = {
@@ -42,6 +47,14 @@ DEFAULT_SCOPE_WEIGHTS: Dict[str, float] = {
 # that spread changes. Measured values: 0.16 for the unweighted mood (spread
 # 0.59) and 0.0243 with weight_power = 2 (spread 2.00), each putting the index
 # about 5% either side of 100.
+#
+# With items_per_source the mood widened again - sd(S) 0.3935 -> 0.5404 - and c
+# was deliberately LEFT ALONE, so the index now swings about 37% further: one
+# week 1.7% -> 2.5%, one month 5.8% -> 10.6%, median daily move 0.47% -> 0.60%.
+# That is the direction section 8 of DESIGN-HISTORY.md asked for, where the
+# chart was too smooth to read. Scaling c by sd_old/sd_new (0.0177) would hold
+# the amplitude where it was and leave only the shape different - a live option,
+# not an oversight. Both were measured with tools/scheme_ab.py.
 DEFAULT_C = 0.0243
 
 # Sensitivity of the retired integrator. Kept because rpi.calibrate still
@@ -70,6 +83,29 @@ DEFAULT_TAU_HOURS = 36.0
 # Raising it widens the mood's spread, so b and c must be re-measured with it: at
 # p = 2 the spread is about 4.6x the unweighted one.
 DEFAULT_WEIGHT_POWER = 2.0
+
+# One report per outlet per story, instead of one report per story.
+#
+# The index used to consume a single item per cluster - the representative - so a
+# story covered by six outlets contributed one report's score and the other five
+# were never analysed at all. Section 11 of DESIGN-HISTORY.md measured what that
+# cost: 27% of sampled members would have flipped their story's sign, and the
+# election rule (richest text wins) quietly suppressed the feeds that write short
+# summaries - bbc-world held 9.2% of the pairs and only 2.2% of the index's
+# weight, because its summaries are a fifth the length of Guardian's.
+#
+# With this on, a story counts once per outlet that covered it, so multiplicity
+# needs no knob of its own: a story four outlets covered contributes four
+# reports, while one outlet covering it four times still contributes one. Each
+# report enters at its own published time, so a story's weight builds as coverage
+# arrives - which is how section 5 says a story's persistence is meant to work,
+# and what collapsing a cluster into one item deleted.
+#
+# It costs a scoring call per pair rather than per story (912 extra on the
+# corpus it was measured on) and it changes the units of S, so b had to be
+# re-measured with it. It does NOT repair a story the clustering fragmented: two
+# clusters holding only negative reports still read negative.
+DEFAULT_ITEMS_PER_SOURCE = True
 
 # Reference level the index treats as "normal news". BOOTSTRAP VALUE.
 # News media is structurally negative, so with b = 0 the index would decay
@@ -126,6 +162,7 @@ class RpiConfig:
     c: float = DEFAULT_C
     tau_hours: float = DEFAULT_TAU_HOURS
     weight_power: float = DEFAULT_WEIGHT_POWER
+    items_per_source: bool = DEFAULT_ITEMS_PER_SOURCE
     baseline_b: float = DEFAULT_BASELINE_B
     snapshot_minutes: int = DEFAULT_SNAPSHOT_MINUTES
     scope_weights: Dict[str, float] = field(

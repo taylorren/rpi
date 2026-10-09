@@ -304,7 +304,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cfg = config_mod.load()
     conn = storage.connect(args.db)
     try:
-        rows = storage.analysed_rows(conn, args.schema_version)
+        # Scheme A explicitly, whatever the config now says: holding the two side
+        # by side is this tool's whole job, so it must not follow the switch.
+        rows = storage.analysed_rows(conn, args.schema_version, per_source=False)
         items_a = calculator.build_items(rows, cfg)
         items_b = build_pair_items(conn, cfg, args.schema_version)
         missing = unscored_pairs(conn, args.schema_version)

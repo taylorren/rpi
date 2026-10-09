@@ -409,7 +409,7 @@ function renderStats(d) {
     ["Awaiting", String(s.pending || 0), "fetched, not yet scored",
      (s.pending || 0) > 0 ? "warn" : ""],
     ["Dupes merged", String(s.duplicates_removed || 0),
-     "repeat reports folded in", ""],
+     "reports a story carries beyond the one per outlet that is read", ""],
   ];
 
   // Values are assembled here from numbers and fixed markup, so they are
@@ -711,16 +711,14 @@ function renderNews(d) {
 
     // Merged duplicates are shown rather than hidden: an index nobody can audit
     // is unfalsifiable, and a silently collapsed story is exactly the sort of
-    // thing that would be impossible to spot later. The count on its own would
-    // claim more than it knows, though: the index takes one score per story, so
-    // the number beside the title is *this* report's reading, not the event's. A
-    // duplicate member is never scored, so the other sources' readings are
-    // unknown - measured at 27% of members disagreeing in sign with their
-    // representative (tools/cluster_audit.py, DESIGN-HISTORY.md section 11).
-    // So the tooltip says what is true rather than implying agreement.
+    // thing that would be impossible to spot later. Since items_per_source the
+    // count means something narrower than it did - a story is read once per
+    // outlet, so each row here is one outlet's report and the badge says how many
+    // reports the story carried in all. The extra ones from an outlet that wrote
+    // several still carry no weight, and that is the "Dupes merged" figure.
     const badge = n.dupes > 1
-      ? '<span class="dupe" title="scored from this report alone; the other ' +
-        'sources folded in are not scored, so their reading can differ">\u00d7' +
+      ? '<span class="dupe" title="this story carried ' + n.dupes +
+        ' reports; every outlet\u2019s is scored separately">\u00d7' +
         n.dupes + "</span>"
       : "";
     const merged = (n.also_in && n.also_in.length)

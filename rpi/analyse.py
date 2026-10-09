@@ -94,7 +94,8 @@ def run(db_path: Path, cfg: config.RpiConfig, limit: Optional[int],
     try:
         pending: List[Any] = storage.pending_items(
             conn, schema.SCHEMA_VERSION, limit=limit, retry_failed=retry_failed,
-            newest_first=newest_first, since=since, until=until)
+            newest_first=newest_first, since=since, until=until,
+            per_source=cfg.items_per_source)
         if not pending:
             if not quiet:
                 print("nothing pending at schema_version={}".format(
@@ -153,7 +154,8 @@ def run(db_path: Path, cfg: config.RpiConfig, limit: Optional[int],
         # Parked items are invisible in the numbers above: they are neither
         # pending nor a failure of *this* run, and no later run will pick them
         # up. Silent omission is how the 2026-09-24 CUDA batch went unnoticed.
-        parked = storage.failed_count(conn, schema.SCHEMA_VERSION)
+        parked = storage.failed_count(conn, schema.SCHEMA_VERSION,
+                                      per_source=cfg.items_per_source)
     finally:
         conn.close()
 

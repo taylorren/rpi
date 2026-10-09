@@ -288,7 +288,8 @@ def recalculate(conn: Any, cfg: RpiConfig, schema_version: int,
     is both correct and idempotent.
     """
     now = now or datetime.now(timezone.utc)
-    rows = storage.analysed_rows(conn, schema_version)
+    rows = storage.analysed_rows(conn, schema_version,
+                                 per_source=cfg.items_per_source)
     items = build_items(rows, cfg)
     if not items:
         return []
@@ -376,7 +377,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cfg = config_mod.load()
     conn = storage.connect(args.db)
     try:
-        rows = storage.analysed_rows(conn, args.schema_version)
+        rows = storage.analysed_rows(conn, args.schema_version,
+                                     per_source=cfg.items_per_source)
         items = build_items(rows, cfg)
         if not items:
             print("no analyses at schema_version={}; run rpi.analyse first".format(

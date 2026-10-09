@@ -110,7 +110,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         step("calculate")
         conn = storage.connect(args.db)
         try:
-            rows = storage.analysed_rows(conn, schema.SCHEMA_VERSION)
+            rows = storage.analysed_rows(conn, schema.SCHEMA_VERSION,
+                                         per_source=cfg.items_per_source)
             if not rows:
                 print("no analyses available; nothing to calculate")
                 warnings += 1
