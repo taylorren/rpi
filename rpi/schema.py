@@ -24,7 +24,7 @@ Design notes
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
 # Bump when the prompts, choices or choice descriptions below change.
 SCHEMA_VERSION = 1
@@ -81,6 +81,68 @@ ANALYSIS_SCHEMA: Dict[str, Dict[str, Any]] = {
 
 # Only integer-valued enums yield an expected_score.
 SCORE_FIELDS: List[str] = ["impact"]
+
+# --------------------------------------------------------------------------- #
+# Candidate impact anchors, under evaluation (tools/anchor_ab.py)
+#
+# The anchors above mix three dimensions into one scale:
+#
+#   * reach          - "affects few people", "changes conditions for many",
+#                      "sustained regional impact"
+#   * media attention - "widely reported", which is the strongest attractor for
+#                      news of any kind and is why level 5 holds a third of the
+#                      model's probability mass
+#   * severity       - "severe", "grave", "world-historic"
+#
+# Reach is already asked separately as ``scope``, so requiring it inside
+# ``impact`` has a concrete cost: a devastating local event cannot exceed about
+# 3, while the top of the scale is reserved for descriptions no ordinary news
+# item can match. Measured on the live corpus (2026-10-09): 96.8% of stories
+# score 2-5, the model's entropy over the eleven levels is 1.40 bits - about 2.6
+# effective levels - and nothing has ever reached 10.
+#
+# These anchors put every level on one axis, depth of consequence for those it
+# touches, expressed as duration and reversibility, and say outright that reach
+# lives elsewhere. Kept terse on purpose: the news text plus every field
+# description has to fit the API's 2,048-token prompt limit.
+IMPACT_ANCHORS_V2: Dict[str, str] = {
+    "0": "nothing changes for anyone",
+    "1": "a passing inconvenience, no lasting effect",
+    "2": "a brief disruption, normal within days",
+    "3": "a real but contained change, recovered within months",
+    "4": "a material change in conditions, a year or more to recover, and not fully",
+    "5": "a lasting change to lives or institutions, years to recover",
+    "6": "a permanent change, the previous state cannot be restored",
+    "7": "a change that redefines what is possible for those affected",
+    "8": "a historic change, redirecting the future of a country or a whole field",
+    "9": "among the largest events of the decade",
+    "10": "world-historic, it changes the global order itself",
+}
+
+IMPACT_DESCRIPTION_V2 = (
+    "Depth of this event's consequence for those it affects, good or bad: how "
+    "long the effect lasts and whether it can be undone. Not how many people or "
+    "how much of the world it reaches - reach is a separate field. "
+    "0 = nothing changes, 10 = world-historic."
+)
+
+
+def impact_schema(anchors: Mapping[str, str] = IMPACT_ANCHORS_V2,
+                  description: str = IMPACT_DESCRIPTION_V2) -> Dict[str, Dict[str, Any]]:
+    """The analysis schema with alternative impact anchors.
+
+    Returns a copy, so the same stored story can be scored under two rubrics and
+    compared without touching the schema the pipeline ships with. Nothing here
+    changes ``SCHEMA_VERSION``: adopting a rubric is a separate, deliberate step
+    (it makes every stored score incomparable and re-queues the corpus).
+    """
+    out: Dict[str, Dict[str, Any]] = {
+        name: dict(field) for name, field in ANALYSIS_SCHEMA.items()}
+    impact = dict(out["impact"])
+    impact["description"] = description
+    impact["choice_descriptions"] = dict(anchors)
+    out["impact"] = impact
+    return out
 
 # Plain-language rubric, used when validating the model by hand.
 SCORING_NOTES = """
