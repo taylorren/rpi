@@ -274,11 +274,23 @@ def _representative_without_analysis() -> str:
 
 def pending_items(conn: sqlite3.Connection, schema_version: int,
                   limit: Optional[int] = None,
-                  retry_failed: bool = False) -> List[sqlite3.Row]:
-    """Items worth a model call now, oldest published first.
+                  retry_failed: bool = False,
+                  newest_first: bool = False,
+                  since: Optional[str] = None,
+                  until: Optional[str] = None) -> List[sqlite3.Row]:
+    """Items worth a model call now, oldest published first by default.
 
     Age ordering matters: news is a time series, and analysing oldest-first
-    keeps partial runs chronologically coherent.
+    keeps partial runs chronologically coherent. ``newest_first`` exists for the
+    opposite case - re-scoring an existing corpus after a rubric change, where
+    the recent end is the part anyone is looking at, so it should be finished
+    first and the older end filled in behind it. Within one window both orders
+    select the same items, so an interrupted run loses nothing either way.
+
+    ``since`` and ``until`` bound the window by event time, ``until`` exclusive,
+    so a long re-score can be cut into date-sized pieces that are resumable and
+    cannot overlap. Stamps are fixed-width ISO-8601 UTC, so a date prefix
+    compares correctly as a string and no parsing is needed.
 
     Items already known to be duplicates are skipped, so a story covered by six
     outlets costs one analysis rather than six. Items that have not been
@@ -303,7 +315,15 @@ def pending_items(conn: sqlite3.Connection, schema_version: int,
         params.extend([schema_version, schema_version,
                        MAX_ANALYSIS_ATTEMPTS,
                        _iso_minutes_ago(ANALYSIS_RETRY_MINUTES)])
-    sql.append("ORDER BY COALESCE(i.published, i.fetched_at) ASC, i.id ASC")
+    if since:
+        sql.append("AND COALESCE(i.published, i.fetched_at) >= ?")
+        params.append(since)
+    if until:
+        sql.append("AND COALESCE(i.published, i.fetched_at) < ?")
+        params.append(until)
+    order = "DESC" if newest_first else "ASC"
+    sql.append("ORDER BY COALESCE(i.published, i.fetched_at) {}, i.id {}"
+               .format(order, order))
     if limit is not None:
         sql.append("LIMIT ?")
         params.append(int(limit))

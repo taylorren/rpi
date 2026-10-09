@@ -19,6 +19,7 @@ Usage::
     python -m rpi.analyse
     python -m rpi.analyse --limit 5 --dry-run
     python -m rpi.analyse --retry-failed
+    python -m rpi.analyse --newest-first --since 2026-10-02   # re-score recent first
 """
 
 from __future__ import annotations
@@ -74,7 +75,10 @@ def parse_response(result: Dict[str, Any]) -> Dict[str, Any]:
 
 def run(db_path: Path, cfg: config.RpiConfig, limit: Optional[int],
         retry_failed: bool, dry_run: bool, quiet: bool,
-        model_name: Optional[str] = None) -> int:
+        model_name: Optional[str] = None,
+        newest_first: bool = False,
+        since: Optional[str] = None,
+        until: Optional[str] = None) -> int:
     conn = storage.connect(db_path)
     # Record which model produced these scores. Attribution belongs in the data,
     # not in the front end: a hardcoded model name would silently go stale the
@@ -89,7 +93,8 @@ def run(db_path: Path, cfg: config.RpiConfig, limit: Optional[int],
 
     try:
         pending: List[Any] = storage.pending_items(
-            conn, schema.SCHEMA_VERSION, limit=limit, retry_failed=retry_failed)
+            conn, schema.SCHEMA_VERSION, limit=limit, retry_failed=retry_failed,
+            newest_first=newest_first, since=since, until=until)
         if not pending:
             if not quiet:
                 print("nothing pending at schema_version={}".format(
@@ -175,6 +180,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--endpoint", default=None,
                         help="override the scoring service URL")
+    parser.add_argument("--newest-first", action="store_true",
+                        help="analyse the newest items first; for re-scoring an "
+                             "existing corpus, where the recent end is the part "
+                             "anyone is looking at")
+    parser.add_argument("--since", default=None, metavar="YYYY-MM-DD",
+                        help="only items published on or after this day")
+    parser.add_argument("--until", default=None, metavar="YYYY-MM-DD",
+                        help="only items published before this day")
     args = parser.parse_args(argv)
 
     cfg = config.load()
@@ -195,7 +208,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         model_name = str(reported) if reported else None
 
     return run(args.db, cfg, args.limit, args.retry_failed, args.dry_run,
-               args.quiet, model_name=model_name)
+               args.quiet, model_name=model_name, newest_first=args.newest_first,
+               since=args.since, until=args.until)
 
 
 if __name__ == "__main__":
