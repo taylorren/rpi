@@ -274,6 +274,7 @@ Stated plainly, because the alternative is pretending.
 | Document            | For                                                                |
 | ------------------- | ------------------------------------------------------------------ |
 | `REQUIREMENTS.md`   | what the project set out to do, and what was decided along the way |
+| `DESIGN-HISTORY.md` | why the index is the way it is: the questions, the measurements, and what was rejected |
 | `deploy/README.md`  | how it runs: the server, the schedule, the alerts                  |
 | `fetcher/README.md` | how news is collected and cleaned                                  |
 | `API.md`            | the scoring service this depends on                                |
