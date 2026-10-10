@@ -456,6 +456,53 @@ The clustering is untouched, and so is the other half of section 11's problem.
 
 ---
 
+## 13. The level barely moved on a story
+
+**Question.** A reader watched a quiet stretch of the day's chart and saw the line sit
+still while reports kept arriving, and asked whether the index was still the
+stock-index-like thing the requirements asked for. The chart's amplitude had been grown
+twice on purpose (sections 9 and 12) without ever re-checking the knob that sets it.
+Was the instrument under-reading, or was the quiet stretch genuinely quiet?
+
+**Measurement.** `tools/weight_power_ab.py` was written to put `p`, `b` and `c` on one
+table. It rebuilds the published series at each `p`, re-measures the mood's mean and
+spread with `calibrate` itself, derives `c = ln(1.05)/sd(S)` - the rule the live `c` was
+set by - and reports the biggest story's share of the weight, the level span by window,
+and the median daily move. A second pass measured the level move caused by the single
+biggest story of the last 24 hours, with and without that story.
+
+```
+p     mean S    sd S   largest/dy   c@5%/sd   1w span   1m span
+2.0   0.3348   0.5288      1.75%     0.09227    9.617%    38.033%
+3.0   0.9537   1.0475      3.37%     0.04658    8.782%    34.186%
+```
+
+**Finding.** Two things, and the second was not expected:
+
+1. The quiet stretch was genuinely quiet. The reports arriving in it were ordinary
+   (|signed| <= 1.8), each worth 0.01-0.16% of the window's weight, and they roughly
+   cancelled - a net +0.004 on `S`. The two stories that did move the line arrived at
+   16:16 and 16:39 local, at +4.28 and +5.58 global.
+2. **Raising `p` does not, by itself, make a single story stand out.** The biggest
+   story's share of the weight roughly doubles (1.75% -> 3.37%), but the mood's spread
+   roughly doubles with it, so its move *relative to the day-to-day noise* is about
+   unchanged (top-story move / median daily move: 0.50 at `p = 2`, 0.45 at `p = 3`).
+   `p` reshapes the distribution toward events; `c` is what sets how far the line moves
+   at all. The live `c` had also fallen below its own rule - 1.3% per sd rather than 5%
+   - when section 12 left it in place across the items_per_source change.
+
+**Decision: adopt.** `p` went 2 -> 3, and `b` and `c` were re-measured on the new units:
+`b` 0.3345 -> 0.9537 (the mean mood) and `c` 0.0243 -> 0.0466, restoring the 5%-per-sd
+rule that the config had drifted below. `CONFIG_VERSION` went to 6. On the live series
+this moves the biggest story of a day from about +0.30 to about +1.0 of level, the
+week's span from 2.5% to 8.8%, and the month's from 10.6% to 34%. To hold the amplitude
+where `p = 2` left it and change only the shape, `c` would be 0.0123 (= 0.0243 x
+sd_old/sd_new); that is the value to reach for if this reads as too much. The index
+still cannot move on ordinary news, and should not - the quiet stretch is still flat -
+and only a story big enough to shift a 3,200-item weighted mean moves the line.
+
+---
+
 ## What was rejected
 
 **Removing the decay kernel** - the proposal to score each story once and never
@@ -512,6 +559,7 @@ on when the analysis happened.
 | `tools/calibration_forecast.py` | How has the projected date moved as the sample grew? |
 | `tools/cluster_audit.py` | Is one report a fair summary of the story it stands for? |
 | `tools/scheme_ab.py` | What would the index read if a story counted once per outlet? |
+| `tools/weight_power_ab.py` | What does a different impact weighting do, and what `b` and `c` does it need? |
 | `tools/score_members.py` | Supply that scheme's inputs - the one tool here that writes |
 
 All but `score_members.py` are read-only. That one writes only `analyses` rows for
@@ -543,12 +591,13 @@ Two habits they share, both learned the hard way:
   Pillay award sits in three - and section 12's per-outlet weighting cannot repair
   that, because each fragment is scored on its own. This is the half of section
   11's problem that survived, and it is the next thing worth measuring.
-* **`c` on the new spread.** Left at 0.0243, so the level swings 37% further than
-  it did. If that reads as too much, 0.0177 holds the amplitude where it was and
-  leaves only the shape different.
-* **`p = 3`.** More event dominance, at the cost of being more hostage to a single
-  story, including a mis-scored one: the largest story of a day would hold 17% of
-  the weight.
+* **`c` on the new spread.** Set to 0.0466 when `p` went to 3, restoring the 5%-per-sd
+  rule; the level now swings 3-4x further than it did at `p = 2` (one week 2.5% -> 8.8%,
+  one month 10.6% -> 34%). If that reads as too much, 0.0123 holds the amplitude where
+  `p = 2` left it and leaves only the shape different.
+* **`p = 3`.** Adopted 2026-10-10 (section 13). More event dominance, at the cost of
+  being more hostage to a single story, including a mis-scored one: the largest story of
+  a day now holds about 17% of the weight.
 * **The index has no memory.** It cannot show that the world has been getting worse
   for a month, because it only reads the present. That is the trade that made it
   readable; the rejected alternative is above.

@@ -30,7 +30,13 @@ from typing import Any, Dict, Mapping, Optional
 # once in total. The index reads one report per (cluster, source) pair instead of
 # one per cluster, so the same stories produce a different S(t) - 37% wider - and
 # b was re-measured for it. See DEFAULT_ITEMS_PER_SOURCE and tools/scheme_ab.py.
-CONFIG_VERSION = 5
+#
+# 5 -> 6 (2026-10-10): the impact weighting was raised from p = 2 to p = 3, so a
+# consequential story carries more of the level and a big event moves the line
+# further. It changes the units of S again - mean 0.3345 -> 0.9537, spread
+# 0.5288 -> 1.0475 - so b and c were re-measured with it. See
+# tools/weight_power_ab.py.
+CONFIG_VERSION = 6
 
 # How much a news item matters according to how far its effects reach.
 DEFAULT_SCOPE_WEIGHTS: Dict[str, float] = {
@@ -44,18 +50,27 @@ DEFAULT_SCOPE_WEIGHTS: Dict[str, float] = {
 # turns a mood deviation into a level move. It is not a rate - there is no
 # per-day term any more - so it is set against the *observed* spread of the mood
 # rather than against a full-scale day, and it has to be re-measured whenever
-# that spread changes. Measured values: 0.16 for the unweighted mood (spread
-# 0.59) and 0.0243 with weight_power = 2 (spread 2.00), each putting the index
-# about 5% either side of 100.
+# that spread changes.
 #
-# With items_per_source the mood widened again - sd(S) 0.3935 -> 0.5404 - and c
-# was deliberately LEFT ALONE, so the index now swings about 37% further: one
-# week 1.7% -> 2.5%, one month 5.8% -> 10.6%, median daily move 0.47% -> 0.60%.
-# That is the direction section 8 of DESIGN-HISTORY.md asked for, where the
-# chart was too smooth to read. Scaling c by sd_old/sd_new (0.0177) would hold
-# the amplitude where it was and leave only the shape different - a live option,
-# not an oversight. Both were measured with tools/scheme_ab.py.
-DEFAULT_C = 0.0243
+# The rule the value follows is c = ln(1.05) / sd(S): a one-standard-deviation
+# mood is worth about 5% either side of 100. Re-measured whenever p or the
+# aggregation changes the units of S:
+#   p = 0   c 0.16    (unweighted mood)
+#   p = 2   c 0.0243  (left in place when items_per_source widened the spread)
+#   p = 3   c 0.0466  sd(S) 1.0475  (current)
+#
+# History: with items_per_source the mood widened - sd(S) 0.3935 -> 0.5404 - and
+# c was deliberately LEFT ALONE at 0.0243, so the level swung about 37% further:
+# one week 1.7% -> 2.5%, one month 5.8% -> 10.6%, median daily move 0.47% ->
+# 0.60%. That was the direction section 8 of DESIGN-HISTORY.md asked for, where
+# the chart was too smooth to read. Leaving it there also put c below its own
+# rule - 1.3% per sd rather than 5% - so raising p to 3 re-measures c back to the
+# rule rather than only re-centring: on p = 3 units a one-sd mood is 5% again,
+# and the median daily move is about 2.2%. To hold the amplitude where p = 2
+# left it instead, set c = 0.0123 (= 0.0243 * sd_old/sd_new); that keeps the
+# chart's swing and changes only its shape. Measured with
+# tools/weight_power_ab.py.
+DEFAULT_C = 0.0466
 
 # Sensitivity of the retired integrator. Kept because rpi.calibrate still
 # expresses its drift budget through it - with k = 0.02 a full-scale day moved
@@ -81,8 +96,14 @@ DEFAULT_TAU_HOURS = 36.0
 # diluting the mood toward zero.
 #
 # Raising it widens the mood's spread, so b and c must be re-measured with it: at
-# p = 2 the spread is about 4.6x the unweighted one.
-DEFAULT_WEIGHT_POWER = 2.0
+# p = 2 the spread is about 4.6x the unweighted one, and at p = 3 it is about
+# twice the p = 2 one again (sd(S) 0.5288 -> 1.0475 on the live corpus). Note
+# what p does and does not buy: the biggest story's share of the window's weight
+# roughly doubles (1.75% -> 3.37%), but so does the spread, so a single story's
+# move relative to the day-to-day noise is about unchanged - p reshapes the
+# distribution toward events, while c sets how far the line moves at all. Both
+# were measured with tools/weight_power_ab.py.
+DEFAULT_WEIGHT_POWER = 3.0
 
 # One report per outlet per story, instead of one report per story.
 #
