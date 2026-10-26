@@ -9,7 +9,7 @@
          network access) into the local inbox,
       2. warns if the freshest item in the inbox is stale, which is the symptom
          of a dead fetcher on the VPS rather than a local fault,
-      3. runs the pipeline (ingest -> dedupe -> analyse -> calculate -> export),
+      3. runs the pipeline (ingest -> dedupe -> analyse -> market -> calculate -> export),
       4. publishes the static page back to the VPS and verifies it.
 
     Design notes:

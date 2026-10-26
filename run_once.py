@@ -8,11 +8,17 @@ Every stage is idempotent, so running this more often than there is new news is
 cheap: ingestion skips unchanged files, analysis skips already-scored items,
 and the snapshot series is recomputed from stored analyses.
 
+The market step is the only stage that reads something other than the news, and
+the only network call the pipeline itself makes. It cannot fail the run: the
+index does not depend on the market, so an unreachable provider costs the page
+its market line and nothing else.
+
 Usage::
 
     python run_once.py
     python run_once.py --skip-analyse      # refresh chart from existing scores
     python run_once.py --limit 5           # cap items analysed this run
+    python run_once.py --skip-market       # publish without refreshing the market
 """
 
 from __future__ import annotations
@@ -25,7 +31,7 @@ from typing import Optional, Sequence
 
 from rpi import (analyse as analyse_mod, api, calculator, config as config_mod,
                  dedupe as dedupe_mod, export as export_mod, ingest as ingest_mod,
-                 paths, schema, storage)
+                 market as market_mod, paths, schema, storage)
 
 
 def step(name: str) -> None:
@@ -43,6 +49,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--skip-ingest", action="store_true")
     parser.add_argument("--skip-dedupe", action="store_true")
     parser.add_argument("--skip-analyse", action="store_true")
+    parser.add_argument("--skip-market", action="store_true")
     parser.add_argument("--skip-calculate", action="store_true")
     parser.add_argument("--retry-failed", action="store_true",
                         help="retry failed items even if the automatic retry "
@@ -105,6 +112,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                    dry_run=False, quiet=args.quiet)
             if code != 0:
                 warnings += 1
+
+    if not args.skip_market:
+        step("market")
+        # Deliberately non-fatal, and deliberately after the news stages: the
+        # index is the product and the market is context for it, so a provider
+        # that is down (or a network that is) must cost the page a line, not a
+        # publication. The failure is reported loudly because the alternative -
+        # a chart that silently stops updating one of its two lines - is
+        # exactly the sort of thing that goes unnoticed for a week.
+        try:
+            market = market_mod.run(args.db)
+            print("{} {} bar(s) from {}; newest {} at {}".format(
+                market["fetched"], market["resolution"], market["source"],
+                market["value"], market["newest"]))
+        except market_mod.MarketError as exc:
+            print("WARN market unavailable; keeping the stored bars: {}".format(exc))
+            print("     the index and the page are unaffected")
+            warnings += 1
 
     if not args.skip_calculate:
         step("calculate")

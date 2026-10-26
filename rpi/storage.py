@@ -93,6 +93,27 @@ CREATE TABLE IF NOT EXISTS rpi_snapshots (
     PRIMARY KEY (ts, config_version, schema_version)
 );
 
+-- The market's own readings, kept beside the index's rather than folded into
+-- it. Nothing here is an input to the index: the two series are stored
+-- together because they are read together (see rpi/market.py).
+--
+-- Keyed by resolution as well as timestamp, because a fallback provider can
+-- describe a moment the primary has already described, more coarsely - the two
+-- readings are both kept, and the finer one is preferred when a chart is drawn.
+CREATE TABLE IF NOT EXISTS market_bars (
+    symbol     TEXT NOT NULL,
+    resolution TEXT NOT NULL,
+    ts         TEXT NOT NULL,
+    value      REAL NOT NULL,
+    change     REAL,
+    change_pct REAL,
+    source     TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (symbol, resolution, ts)
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_symbol_ts ON market_bars(symbol, ts);
+
 -- De-duplication -----------------------------------------------------------
 -- Clusters are DERIVED and are rebuilt from scratch; the expensive part is
 -- the pair verdicts, which are cached so the model is never asked twice.
@@ -666,11 +687,63 @@ def clear_snapshots(conn: sqlite3.Connection, config_version: int,
     return cursor.rowcount
 
 
+# --------------------------------------------------------------------------- #
+# market bars
+# --------------------------------------------------------------------------- #
+
+def save_market_bars(conn: sqlite3.Connection,
+                     rows: Iterable[Mapping[str, Any]]) -> int:
+    """Upsert market bars, keyed by (symbol, resolution, ts).
+
+    Idempotent by construction: a provider re-sends its whole rolling window on
+    every fetch, so the same bar arrives again every hour and has to land on the
+    same row rather than beside it. ``change``/``change_pct`` are overwritten
+    with whatever the newest fetch says, which is the point - a session's move
+    is only final once the session is.
+
+    Returns the number of rows offered rather than the number newly inserted.
+    The caller is reporting a fetch, and "0 new rows" would read as a failure on
+    every hour in which nothing had happened, which is most of them.
+    """
+    rows = list(rows)
+    conn.executemany(
+        "INSERT INTO market_bars(symbol, resolution, ts, value, change,"
+        " change_pct, source, fetched_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)"
+        " ON CONFLICT(symbol, resolution, ts) DO UPDATE SET"
+        "  value = excluded.value, change = excluded.change,"
+        "  change_pct = excluded.change_pct, source = excluded.source,"
+        "  fetched_at = excluded.fetched_at",
+        [(row["symbol"], row["resolution"], row["ts"], row["value"],
+          row["change"], row["change_pct"], row["source"], row["fetched_at"])
+         for row in rows])
+    return len(rows)
+
+
+def market_bars(conn: sqlite3.Connection, symbol: Optional[str] = None
+                ) -> List[sqlite3.Row]:
+    """Stored bars, oldest first, optionally for one symbol.
+
+    Ordered by ``ts`` and then by resolution, so two bars describing the same
+    moment come back together and a caller that prefers the finer reading of
+    that moment can say so in one place. Which resolution is finer is
+    ``rpi.market``'s business, not this module's - storage keeps readings, it
+    does not rank them.
+    """
+    if symbol is None:
+        return list(conn.execute(
+            "SELECT symbol, resolution, ts, value, change, change_pct, source,"
+            " fetched_at FROM market_bars ORDER BY ts ASC, resolution ASC"))
+    return list(conn.execute(
+        "SELECT symbol, resolution, ts, value, change, change_pct, source,"
+        " fetched_at FROM market_bars WHERE symbol = ?"
+        " ORDER BY ts ASC, resolution ASC", (symbol,)))
+
+
 def counts(conn: sqlite3.Connection) -> Dict[str, int]:
     """Row counts for a quick status report."""
     out: Dict[str, int] = {}
     for table in ("items", "analyses", "analysis_errors", "rpi_snapshots",
-                  "clusters", "duplicate_pairs"):
+                  "clusters", "duplicate_pairs", "market_bars"):
         row = conn.execute("SELECT COUNT(*) AS n FROM {}".format(table)).fetchone()
         out[table] = int(row["n"]) if row else 0
     return out

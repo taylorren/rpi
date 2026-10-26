@@ -28,6 +28,11 @@ workstation analyses it, and only the finished static page flows back.
   workstation during development, where much of the news is unreachable, but production
   has no such restriction. Verified: `--check-sources` passes for all 10 configured feeds
   from the VPS, and reports `proxy: none (auto-detected nothing)`.
+* **The market feed is the exception, and it is fetched here.** The news feeds are
+  unreachable from mainland China and the Shanghai composite is reachable only from there,
+  so `rpi/market.py` runs with the pipeline on the workstation and is the only network call
+  the pipeline itself makes. It cannot fail a run: an unreachable provider costs the page its
+  market line and nothing else.
 * **The analyser needs the GPU.** The scoring model is a local HTTP service on port 8765;
   it is not exposed and should not be.
 * **Pull, not push.** The workstation has no SSH server, so it initiates the transfer.

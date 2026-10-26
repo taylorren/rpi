@@ -6,6 +6,10 @@ Pipeline:
 
 The fetcher lives outside this package and only produces news. Everything that
 consumes it lives here.
+
+``market`` is the one module here that reads something other than the news: the
+Shanghai composite, stored beside the index so a page can draw the two together.
+Nothing in the index depends on it.
 """
 
 import sys as _sys
@@ -35,4 +39,4 @@ def _force_utf8_output() -> None:
 _force_utf8_output()
 
 __all__ = ["api", "calculator", "config", "dedupe", "export", "ingest",
-           "paths", "schema", "storage"]
+           "market", "paths", "schema", "storage"]
