@@ -503,6 +503,69 @@ and only a story big enough to shift a 3,200-item weighted mean moves the line.
 
 ---
 
+## 14. The market, for the same day
+
+**Question.** The index is presented like a stock index and moves like one. Did the market
+move the same way?
+
+**Measurement.** Three sources, checked before any of them was wired in:
+
+| source | what it gives | verdict |
+| ------ | ------------- | ------- |
+| Eastmoney `push2his`, `klt=5` | 5-minute bars, 1,489 of them, 2026-09-03 .. 2026-10-26 | **primary** - one request covers today, 1w and 1m |
+| Eastmoney `klt=1` | the current session only (1 bar at 09:31 CST) | rejected - no history behind it |
+| Tencent `fqkline`, `day` | daily bars, 60 | **fallback** - a different operator, coarser |
+| Tencent `kline/mkline`, `m5` | - | unreachable: DNS fails from the workstation |
+| Yahoo `000001.SS` | - | HTTP 403 here, and it would need the VPS |
+
+The two that work were checked against each other over 2026-10-15 .. 10-23: identical opens,
+closes, highs and lows, so the fallback is a real second opinion rather than a second guess.
+
+**Finding.** The fetch belongs on the workstation, not the VPS - the reverse of the news
+fetcher, and for the same reason. And the market cannot be drawn on its own axis: two
+independently auto-scaled lines both fill the panel whatever they did, which hides the only
+thing the line is there to show.
+
+**The clocks do not match, and the chart has to say so.** The index reads news every minute of
+every day; the market trades 09:30-15:00 CST (01:30-07:00 UTC) on working days - 5.5 hours in
+24, and none at weekends. Two things follow. A flat stretch carried across the shut hours is
+indistinguishable from a market that did nothing, so the line is drawn **solid where it traded
+and dashed where it was carried** - the same meaning the dashed 24h average already has, that
+no reading was taken along it - and the window publishes its own cadence so the page can tell
+the two apart without knowing anything about the exchange calendar. And the two series cannot
+be compared by clock at all, so their *numbers* are paired instead: the header's change and the
+legend's change both run from the first reading visible to the last in whichever window the
+reader picked. The tooltip stamps its market reading with the moment it was taken, because in
+the wider windows that reading can be hours old.
+
+**Change.** `rpi/market.py` fetches and stores bars in a new `market_bars` table;
+`rpi.export` publishes them per window beside the index's, each window carrying its own cadence
+and its own move; the page draws the market anchored to the index's first visible level, in
+violet, solid where traded and dashed where carried, with the market's own level and move
+printed in the legend. The step runs in `run_once.py` and cannot fail a run: an absent `market`
+section means the fetch has never worked, which the page distinguishes from a market that has
+not moved.
+
+Rejected: rebasing the market to 100 (a second meaning on one axis, when the index's own
+levels are what the labels mean); a second panel or a right-hand axis (the comparison is of
+*moves*, and the eye does that comparison only on a shared scale); a ninth stat cell (the
+stats block is a deliberate 4x2 rectangle, and one more cell makes it ragged); and putting
+anything from the market into `rpi.config.json` (it does not shape the index, so it must not
+invalidate a snapshot).
+
+Rejected for the clock mismatch: **resampling the index onto the market's clock** for the
+line, which would throw away the overnight reading - and the overnight reading is the digest
+the market opens into, not noise; **compressing the shut hours out of the axis** so the
+market's line is continuous, which hides the 18.5 hours a day in which only the index has
+anything to say and would misstate the volume band underneath; and **moving the index's day
+boundary to CST midnight** so that a day brackets a session, which is tempting for a Chinese
+reader but leaves the index's own day (and the fetcher's UTC-dated inbox) alone for a pairing
+that should be done by instant rather than by day. The pairing that would mean something -
+market close-to-close against the index over the same interval - is described in the README
+and deliberately not built: twenty sessions is not a sample.
+
+---
+
 ## What was rejected
 
 **Removing the decay kernel** - the proposal to score each story once and never

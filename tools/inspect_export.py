@@ -36,6 +36,11 @@ def main(argv=None) -> int:
     payload: Dict[str, Any] = json.loads(args.path.read_text(encoding="utf-8"))
     base = payload["meta"]["base_level"]
     stats = payload["summary"]
+    # The market's series is drawn on the same axis as the index's, scaled to
+    # the index's first visible level - so it can widen the range the chart
+    # auto-scales to, and a scale report that ignored it would quietly stop
+    # describing the chart it claims to describe.
+    market_windows = (payload.get("market") or {}).get("windows") or {}
 
     print("export      : {}".format(args.path))
     print("generated   : {}".format(payload["meta"]["generated_at"]))
@@ -48,8 +53,8 @@ def main(argv=None) -> int:
     print("base_level  : {:.3f}".format(base))
     print()
 
-    header = "{:<6} {:>4} {:>11} {:>11} {:>9} {:>9} {:>8}".format(
-        "window", "pts", "min", "max", "span", "occupancy", "baseline")
+    header = "{:<6} {:>4} {:>11} {:>11} {:>9} {:>9} {:>8} {:>14}".format(
+        "window", "pts", "min", "max", "span", "occupancy", "baseline", "market")
     print(header)
     print("-" * len(header))
 
@@ -59,6 +64,16 @@ def main(argv=None) -> int:
             continue
         levels = [p["level"] for p in points]
         data_min, data_max = min(levels), max(levels)
+
+        # Mirror the UI: the market line is anchored to the index's first
+        # visible level, and it is inside the auto-scaled range too.
+        mkt_win = market_windows.get(name) or {}
+        mkt = mkt_win.get("points") or []
+        if len(mkt) >= 2 and mkt[0]["value"]:
+            scale = points[0]["level"] / mkt[0]["value"]
+            scaled = [p["value"] * scale for p in mkt]
+            data_min = min(data_min, min(scaled))
+            data_max = max(data_max, max(scaled))
         data_span = data_max - data_min
 
         # Mirror the UI exactly: auto-scale to the visible data, with 12%
@@ -72,15 +87,26 @@ def main(argv=None) -> int:
         # The baseline is only drawn when it happens to fall inside the range.
         baseline_drawn = data_min <= base <= data_max
 
-        print("{:<6} {:>4} {:>11.3f} {:>11.3f} {:>9.3f} {:>8.1f}% {:>8}".format(
+        # The market's own move over the window, which is the number the page
+        # prints beside the index's - measured from the first visible reading to
+        # the last, so the two compare like for like.
+        mkt_change = mkt_win.get("change_pct")
+        mkt_note = ("-" if not mkt else "{}p {:+.2f}%".format(
+            len(mkt), mkt_change if mkt_change is not None else 0.0))
+
+        print("{:<6} {:>4} {:>11.3f} {:>11.3f} {:>9.3f} {:>8.1f}% {:>8} {:>14}".format(
             name, len(points), data_min, data_max, data_span, ratio,
-            "drawn" if baseline_drawn else "-"))
+            "drawn" if baseline_drawn else "-", mkt_note))
 
     print()
     print("occupancy = share of the chart height the data occupies (higher is better;")
     print("            the UI auto-scales, so this is normally ~83%).")
     print("baseline  = whether the epoch line at {} falls inside this window;".format(base))
     print("            it is drawn only when it does, so it never skews the scale.")
+    print("market    = points of the market line in this window and its move over")
+    print("            the window. It widens the range above when it swings further")
+    print("            than the index does, and it is dashed where the market was")
+    print("            shut and the line was carried.")
     print("NOTE: 'span' is the real move. Compare it with the header change of "
           "{:+.3f}.".format(stats["change"]))
 

@@ -211,6 +211,11 @@ story talking, not the world changing.
 **The bars at the bottom** are volume — how many stories were published in each period.
 They are worth glancing at, because a quiet news day and a busy one mean different things for how much the line can be trusted. A big index move on low volume is a couple of stories; the same move on high volume is a real shift in the world's news.
 
+**The violet line** is the Shanghai composite (上证指数), the market's own reading for the same
+window, drawn beside the index's. It is not an input to the index and not a control on it —
+it is there so the question "did the shares move the way the news did?" can be asked of one
+chart instead of two. How it is scaled, and what it does not mean, is described below.
+
 **The stat row** summarises the current state: the level, the change over the selected
 window and over 24 hours, the mood $S(t)$, the baseline, volume, how many stories have been analysed, how many duplicates were merged, and the balance of positive versus negative stories.
 
@@ -252,6 +257,63 @@ The same story is frequently covered by several of them. Before scoring, the sto
 
 ---
 
+## The market, for the same day
+
+The index is presented like a stock index and moves like one, so the obvious next question is
+the market's: **did the shares move the same way the news did?** Nothing inside the index can
+answer it — the index is built from news text alone — so the answer is fetched and drawn
+beside it.
+
+- **What it is.** The Shanghai composite (上证指数, 000001), from Eastmoney's public 5-minute
+  series, with Tencent's daily series as a fallback. The two were checked against each other
+  for 2026-10-15..10-23: identical opens, closes, highs and lows. It is fetched by the
+  pipeline itself, on the workstation, and stored in SQLite like everything else.
+- **It is not an input.** No market number reaches the index's arithmetic. The two series are
+  drawn together because they are read together, and nothing else.
+- **How it is drawn.** The market line is scaled to the index's first visible level, so the gap
+  between the two lines is the difference in what each moved over the window you are looking
+  at. The market's own level and move are printed in the legend, so nothing has to be read off
+  the scale.
+- **Two clocks, and the chart says so.** The index reads news around the clock; the Shanghai
+  market trades 09:30-15:00 CST (01:30-07:00 UTC) on working days — 5.5 hours out of every 24,
+  and none at weekends. So the market's line is **solid where it traded and dashed where it was
+  carried**: the last price stands while the market is shut, and a flat stretch drawn
+  identically would read as a market that did nothing. A dashed stretch is also what a missed
+  fetch looks like, which is the same statement — nobody had a reading there.
+- **The numbers are paired, the clocks are not.** The header's change and the legend's change
+  are both measured from the first reading visible to the last, in the window you picked, so
+  they compare like for like whatever window that is. The tooltip names the moment its market
+  reading was taken, because in the wider windows the last one can be hours old.
+- **Why one scale and not two axes.** Two independent axes would fill the panel with both
+  series whatever they did, hiding exactly the difference the line exists to show. Anchored to
+  one axis, a market that swung three times as far as the index is *drawn* swinging three times
+  as far — which is the finding, not a rendering artefact.
+- **When it is missing.** If no provider answers, the stored bars stay as they were, the export
+  omits the market section, and the page shows a dash instead of drawing a flat line. The index
+  publishes either way: the market fetch cannot fail a run. The footer always names the
+  provider that answered and when its newest bar was taken.
+- **What it does not mean.** Agreement between the two is not expected and is not evidence for
+  anything. The market prices what investors expect to happen to profits, in one country; the
+  index reads what the news says has already happened, worldwide. A day where they disagree is
+  the normal case.
+
+### The comparison that would mean something is by session, not by clock
+
+One session is 5.5 hours of a 24-hour index, so pairing the two by calendar day compares a
+market that was open with an index that never stopped. The honest pairing is at an instant: the
+market's close-to-close move against the index's move over exactly the same interval, both
+ending at the session's close. That handles weekends and holidays by construction — a Monday
+pair spans the three days the market was shut, and the index's interval stretches with it —
+and it is the only form in which a correlation would mean anything.
+
+It is not built, and it should not be yet. The index's history is about a month, which is
+twenty sessions — nowhere near enough to measure a relationship. And the index is
+*contemporaneous* with the news while the market prices what it expects, so the interesting
+quantity is a lead or a lag rather than a same-day match, which is a question for a tool that
+prints what it measured and stops, like the others in `tools/`.
+
+---
+
 ## Known limitations
 
 Stated plainly, because the alternative is pretending.
@@ -259,6 +321,14 @@ Stated plainly, because the alternative is pretending.
 - **The baseline is uncalibrated**, as described above. The level is provisional.
 - **The model is wrong sometimes**, and confidently wrong on occasion. It has scored a story about renaming AI as the largest positive event of the day, and rated a military build-up as entirely neutral. It does better on major news than on unusual wording.
 - **Magnitude is bunched.** Asked for 0–10, the model leans toward 5 for a lot of stories. Using the probability-weighted average rather than its single favourite answer recovers most of the lost resolution, but not all of it.
+- **The market line is context, not a control.** It measures something else — one country's
+  equity market, against news read worldwide — so the two lines agreeing or disagreeing is not
+  evidence about either. It is drawn on the index's own scale, and a day when only the
+  fallback answered carries daily bars rather than 5-minute ones, so a gap in the intraday
+  windows can be a provider's outage rather than a quiet market. And the two keep different
+  clocks: the market is shut 18.5 hours of every day and all weekend, so a flat or dashed
+  stretch is a closure, not a pause in the news. The footer says which provider answered and
+  how old its newest bar is.
 - **The editorial mix is still narrow, and unevenly weighted.** Six English-language
   outlets, two of them state-affiliated, are not the world — and because two of them are
   59% of the corpus by volume, the index moves when an outlet's *publishing rate* changes,

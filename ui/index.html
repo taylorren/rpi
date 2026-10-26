@@ -15,6 +15,10 @@
     --down: #ef4444;
     --accent: #38bdf8;
     --warn: #f59e0b;
+    /* The market's own series. A colour of its own, because it is neither the
+       index nor a warning about it - and not green/red, which here mean the
+       index's direction rather than the market's. */
+    --market: #a78bfa;
   }
   * { box-sizing: border-box; }
   body {
@@ -162,13 +166,21 @@
   .neg { color: var(--down); }
   .wlabel { color: var(--muted); font-size: 12px; font-weight: 400; }
 
-  .legend { display: flex; gap: 16px; font-size: 10.5px; color: var(--muted);
-            margin: 0 0 8px 2px; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 10.5px;
+            color: var(--muted); margin: 0 0 8px 2px; }
   .legend i { display: inline-block; width: 13px; margin-right: 5px;
               vertical-align: middle; }
   .legend i.line { height: 2px; }
   .legend i.dashed { height: 0; border-top: 2px dashed var(--warn); }
   .legend i.bar { height: 8px; background: rgba(56,189,248,.45); }
+  .legend i.market { height: 2px; background: var(--market); }
+  /* The market's entry carries a value, so it is set apart from the three that
+     only name a line - and kept on its own line when the row wraps, because it
+     is a reading about another instrument and not another item in a key. */
+  .legend .mkt { display: inline-flex; gap: 6px; align-items: baseline; }
+  .legend .mkt i { margin-right: 0; }
+  .legend .mkt b { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .legend .mkt .asof { color: var(--muted); font-weight: 400; }
 
   .vol { fill: rgba(56,189,248,.30); }
   .volbar { stroke: var(--line); stroke-width: 1; }
@@ -200,9 +212,12 @@
       <span><i class="line" id="swatch-index"></i>index</span>
       <span><i class="dashed"></i>24h average</span>
       <span><i class="bar"></i>volume (items)</span>
+      <span class="mkt" id="marketlegend"><i class="market"></i><span>Shanghai
+        000001</span> <b id="marketvalue">&mdash;</b>
+        <span class="asof" id="marketasof"></span></span>
     </div>
     <svg id="chart" viewBox="0 0 1000 350" preserveAspectRatio="none"
-         role="img" aria-label="RPI index level over time with moving average and volume"></svg>
+         role="img" aria-label="RPI index level over time with moving average, volume, and the Shanghai composite for the same window"></svg>
   </div>
 
   <div class="stats" id="stats"></div>
@@ -445,6 +460,89 @@ function niceTicks(lo, hi, count) {
   return out;
 }
 
+// The market's line for one window, in the index's own units.
+//
+// Both series are anchored to the index's first visible level rather than each
+// being auto-scaled on its own axis. The question a reader brings to this line
+// is whether the market moved the way the news did, and that is a question
+// about *moves*: two independent scales would fill the panel with both series
+// whatever they did, which hides exactly the difference the line is there to
+// show. So a market that swung three times as far as the index is drawn
+// swinging three times as far - and the legend prints the market's own level
+// and move, so nothing depends on reading the scale off the chart.
+//
+// The anchor is the window's first *index* point, which is the one moment both
+// series are guaranteed to have in common: the index is the reason the window
+// exists, and it is what the left-hand axis labels already mean.
+//
+// `carried` marks a segment whose two ends are further apart than the window's
+// cadence. The market trades 5.5 hours out of every 24 and not at weekends, so
+// most of any chart is a period with no market in it; the line is drawn across
+// it because the last price still stands, but that flat stretch must not read
+// as a market that did nothing. See the drawing code in renderChart.
+function marketSeries(d, win, anchor) {
+  const w = (d.market && d.market.windows) ? d.market.windows[win] : null;
+  const m = (w && w.points) || [];
+  if (m.length < 2) return [];
+  const base = m[0].value;
+  if (!base) return [];
+  const scale = anchor / base;
+  const cadence = (w.cadence_minutes || 0) * 60000;
+  // `carried` is about the segment arriving at this reading, and drives the
+  // drawing: dashed means the line was carried across a shut market rather than
+  // traded through it.
+  const long = ms => cadence > 0 && ms > cadence * 1.5;
+  return m.map((p, i) => {
+    const t = new Date(p.t).getTime();
+    const gapIn = i ? t - new Date(m[i - 1].t).getTime() : 0;
+    return { t: t, v: p.value * scale, raw: p.value, carried: long(gapIn) };
+  });
+}
+
+// The market's reading, printed rather than drawn: the line shows the shape,
+// this shows the number. An absent section means the fetch has never worked,
+// which is a different thing from a market that has not moved, so it says so
+// instead of printing a zero.
+function renderMarketLegend(d) {
+  const value = document.getElementById("marketvalue");
+  const asof = document.getElementById("marketasof");
+  const entry = document.getElementById("marketlegend");
+  const m = d.market;
+  if (!value || !entry) return;
+
+  if (!m || !m.latest) {
+    value.textContent = "\u2014";
+    value.className = "";
+    if (asof) asof.textContent = "";
+    entry.title = "no market data stored yet";
+    return;
+  }
+
+  // The change shown is the market's move over the window on screen, which is
+  // the same convention as the index's own change in the header - both run from
+  // the first reading visible to the last, so the two numbers compare like for
+  // like whatever window the reader picked. The day's move against the previous
+  // close is used only when the window holds a single reading, where a window
+  // change would be zero by construction and read as "the market did nothing".
+  const w = (m.windows || {})[WINDOW];
+  const points = (w && w.points) || [];
+  const chg = (points.length >= 2 && w.change_pct !== null &&
+               w.change_pct !== undefined) ? w.change_pct : m.latest.change_pct;
+  const over = (points.length >= 2) ? " over this window" : " today";
+  const cls = chg === null || chg === undefined ? "" : chg > 0 ? "up" : chg < 0 ? "down" : "flat";
+  value.className = cls;
+  value.textContent = compact(m.latest.value) +
+    (chg === null || chg === undefined ? "" : " " + pct(chg));
+  if (asof) asof.textContent = "at " + fmtTime(m.latest.t, "1w");
+  // Set as a property, so this is the plain text the browser stores - no
+  // escaping, which would show up literally in a tooltip.
+  entry.title = (m.local_name || m.name) + ", " + m.symbol + " \u00B7 " +
+    m.resolution + " bars from " + m.source +
+    " \u00B7 the line is scaled to the index at the window's start and dashed " +
+    "where the market was shut; the value above is the market's own level, " +
+    "the move is" + over + ", as of " + m.as_of;
+}
+
 function renderChart(d) {
   const pts = d.windows[WINDOW] || [];
   const svg = document.getElementById("chart");
@@ -462,19 +560,30 @@ function renderChart(d) {
 
   const levels = pts.map(p => p.level);
   const averages = pts.map(p => p.ma);
+  // The market's line for this window, already in the index's units.
+  const market = marketSeries(d, WINDOW, pts[0].level);
+  const mkts = market.map(p => p.v);
   // Auto-scale to the visible data only. Forcing the epoch baseline into the
   // range would crush a quiet day: with base 100 and today's levels near 99.2,
   // a real 0.4-point move would occupy under 4% of the panel height and read
   // as flat. The baseline is drawn separately, and only when it falls inside.
-  // The moving average is included so it cannot fall off the panel.
-  const lo0 = Math.min(...levels, ...averages);
-  const hi0 = Math.max(...levels, ...averages);
+  // The moving average is included so it cannot fall off the panel - and the
+  // market too, for the same reason: a line that leaves the panel is worse
+  // than a shorter index line, because the reader cannot tell it is there.
+  const lo0 = Math.min(...levels, ...averages, ...mkts);
+  const hi0 = Math.max(...levels, ...averages, ...mkts);
   const span0 = hi0 - lo0;
   const padY = (span0 > 0 ? span0 : Math.max(Math.abs(hi0), 1) * 0.001) * 0.12;
   const lo = lo0 - padY, hi = hi0 + padY;
 
   const times = pts.map(p => new Date(p.t).getTime());
-  const t0 = times[0], t1 = times[times.length - 1];
+  const mt = market.map(p => p.t);
+  // The axis covers both series. A market point can sit just outside the
+  // index's own span - the market's day closes hours before the index's last
+  // reading of that same day - and a point drawn past the plot edge would be
+  // painted over the axis labels, so the domain is widened by the few hours it
+  // takes rather than the point being dropped.
+  const t0 = Math.min(times[0], ...mt), t1 = Math.max(times[times.length - 1], ...mt);
 
   const x = t => PAD.l + (t - t0) / (t1 - t0 || 1) * (W - PAD.l - PAD.r);
   const y = v => plotTop + (hi - v) / (hi - lo || 1) * (plotBottom - plotTop);
@@ -516,6 +625,32 @@ function renderChart(d) {
   svgOut += "<path d='" + area + "' fill='url(#" + gid + ")'/>";
   svgOut += "<path d='" + line + "' fill='none' stroke='" + stroke +
     "' stroke-width='2' stroke-linejoin='round'/>";
+
+  // The market, drawn over the index's area and under the average. It is drawn
+  // segment by segment rather than as one path, because a segment that spans a
+  // period with no market in it has to look different from one that was traded:
+  // the market is shut overnight and all weekend, the line is carried across
+  // those hours because the last price still stands, and drawn identically that
+  // flat stretch reads as a market that did nothing. Dashed and faded means
+  // carried - the same meaning the dashed 24h average has, that this is not a
+  // reading taken at every point along it.
+  if (market.length >= 2) {
+    let traded = "", carried = "";
+    for (let i = 1; i < market.length; i++) {
+      const a = market[i - 1], b = market[i];
+      const seg = "M" + x(a.t).toFixed(2) + " " + y(a.v).toFixed(2) +
+        " L" + x(b.t).toFixed(2) + " " + y(b.v).toFixed(2) + " ";
+      if (b.carried) carried += seg; else traded += seg;
+    }
+    if (traded) {
+      svgOut += "<path d='" + traded + "' fill='none' stroke='var(--market)'" +
+        " stroke-width='1.4' stroke-linejoin='round'/>";
+    }
+    if (carried) {
+      svgOut += "<path d='" + carried + "' fill='none' stroke='var(--market)'" +
+        " stroke-width='1.2' stroke-dasharray='3 4' opacity='.45'/>";
+    }
+  }
 
   // Moving average: shown for multi-day windows only. "today" is raw
   // snapshots (hourly, 96 points) and smoothing would hide genuine moves;
@@ -594,10 +729,10 @@ function renderChart(d) {
   svgOut += "<circle id='dot' class='dot' r='3.5' style='display:none'/>";
 
   svg.innerHTML = svgOut;
-  attachHover(pts, times, x, y);
+  attachHover(pts, times, market, x, y);
 }
 
-function attachHover(pts, times, x, y) {
+function attachHover(pts, times, market, x, y) {
   const svg = document.getElementById("chart");
   const cross = document.getElementById("cross");
   const dot = document.getElementById("dot");
@@ -618,6 +753,21 @@ function attachHover(pts, times, x, y) {
     dot.setAttribute("cx", cx); dot.setAttribute("cy", cy);
     dot.style.display = "";
 
+    // The market's reading at the same moment, as the provider published it -
+    // not the scaled value the line is drawn at, so the tooltip prints a level
+    // that could be looked up elsewhere. "At or before" rather than nearest:
+    // the market's last reading before a moment is what was known at that
+    // moment, which is the only thing a past point can be explained by.
+    //
+    // It carries its own timestamp, because in the wider windows the reading can
+    // be hours old - the market shuts overnight and the line is carried - and a
+    // bare number there would read as the market's level at the hovered moment
+    // rather than as the last one anybody had.
+    let marketRow = null;
+    for (const q of market) {
+      if (q.t <= times[best]) marketRow = q; else break;
+    }
+
     // The point's reading, then what produced it. A level on its own invites the
     // question "why here?", and the answer is always a handful of reports rather
     // than the aggregate - so they are named, with the share of the point's
@@ -636,6 +786,8 @@ function attachHover(pts, times, x, y) {
       "24h avg " + compact(p.ma) + " \u00B7 S(t) " +
       (p.s >= 0 ? "+" : "") + p.s.toFixed(4) + "<br>" +
       "volume " + p.v + " \u00B7 active " + p.n +
+      (marketRow ? "<br>market " + compact(marketRow.raw) + " \u00B7 " +
+        esc(fmtTime(new Date(marketRow.t).toISOString(), "1w")) : "") +
       (carried ? '<div class="tipsec">what carried this point</div>' + carried : "");
     tip.style.left = Math.min(ev.clientX + 14, window.innerWidth - 400) + "px";
     tip.style.top = Math.max(ev.clientY - 62, 8) + "px";
@@ -660,6 +812,15 @@ function renderFooter(d) {
     "\u03C4 = " + m.tau_hours + " h",
     "base = " + m.base_level,
     "calibrated = " + m.calibrated,
+    // The market's provenance, stated with the index's own. Which provider
+    // answered and when the bar was taken both matter: a daily fallback reads
+    // exactly like a 5-minute feed on the chart, and a reading that is hours
+    // old is not the same thing as one that is minutes old.
+    ...(d.market
+      ? ["market " + d.market.symbol + " " + d.market.resolution + " via " +
+         d.market.source + " at " + d.market.as_of,
+         "market line scaled to the index at the window's start"]
+      : ["market not stored yet (python -m rpi.market)"]),
   ].map(b => "<span>" + esc(b) + "</span>").join("");
 
   const nimble = '<a href="https://github.com/bespokelabsai/nimble"' +
@@ -764,6 +925,7 @@ function render() {
   renderQuote(DATA);
   renderBanner(DATA);
   renderStats(DATA);
+  renderMarketLegend(DATA);
   renderChart(DATA);
   renderNews(DATA);
   renderFooter(DATA);

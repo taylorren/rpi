@@ -17,6 +17,12 @@ Window       Resolution   Typical points
 ``1m``       daily        30
 ===========  ===========  ==============
 
+The market's own series (``market``, see :mod:`rpi.market`) is bucketed by the
+same rule and published per window beside the index's, so the page can draw the
+two together without deciding anything itself. It is a separate section rather
+than a field on the index's points because the two are separate readings that
+happen to share an axis.
+
 Usage::
 
     python -m rpi.export
@@ -34,7 +40,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import bisect
 
-from . import calculator, config as config_mod, paths, schema, storage
+from . import calculator, config as config_mod, market, paths, schema, storage
 
 _LN2 = math.log(2.0)
 
@@ -120,6 +126,198 @@ and is carried along as context for the decay maths.
             "v": volume,
         })
     return out
+
+
+def market_points(bars: Sequence[Tuple[datetime, float]]) -> List[Dict[str, Any]]:
+    """Market readings as chart points, in the shape the index's points use.
+
+    ``value`` is the market's own level - the number a reader could look up -
+    and not the scaled value the page draws, because the scaling is a property
+    of the window being viewed and this is the reading itself.
+    """
+    return [{"t": moment.isoformat().replace("+00:00", "Z"),
+             "value": round(value, 4)} for moment, value in bars]
+
+
+def bucket_market(bars: Sequence[Tuple[datetime, float]],
+                  delta: timedelta) -> List[Dict[str, Any]]:
+    """Reduce market bars to one per bucket, keeping the last value in each.
+
+    The same rule, and the same epoch-aligned buckets, as :func:`bucket` above:
+    a market point and an index point that land in one bucket are then two
+    readings of the same interval rather than two points of different
+    arithmetic, which is what makes the two lines comparable at all.
+
+    Each point keeps its *own* timestamp rather than the bucket's. A reading is
+    drawn where it was true, and a session's close really did happen at 07:00
+    UTC - the index's daily point for the same date sits at the end of the UTC
+    day because that is when its own last reading was taken. The two are a few
+    hours apart on a chart and that gap is a fact, not a rounding error.
+    """
+    if not bars:
+        return []
+    step = max(int(delta.total_seconds()), 1)
+    grouped: Dict[int, Tuple[datetime, float]] = {}
+    order: List[int] = []
+    for moment, value in bars:
+        key = int(moment.timestamp()) // step
+        if key not in grouped:
+            order.append(key)
+        grouped[key] = (moment, value)
+    return market_points([grouped[key] for key in order])
+
+
+def build_market(conn: Any, now: Optional[datetime] = None,
+                 symbol: str = market.SYMBOL) -> Optional[Dict[str, Any]]:
+    """The market's readings for the chart's three windows, or ``None``.
+
+    ``None`` rather than an empty section when nothing is stored. The page
+    treats a missing key as "say nothing about the market", and that has to
+    stay distinguishable from "the market did not move", which is a reading: an
+    absent line means the fetch has never succeeded, not that the market was
+    quiet. It is the same contract ``meta.calibration`` uses, and for the same
+    reason - a section that cannot be missing cannot report a failure.
+
+    Resolutions are chosen per window from whatever is stored, so this works
+    whether the last successful fetch was the primary's 5-minute series or the
+    fallback's daily one:
+
+    ===========  ===================  ==================
+    Window       Market resolution    Mirrors the index
+    ===========  ===================  ==================
+    ``today``    as fetched           15-minute snapshots
+    ``1w``       hourly               hourly buckets
+    ``1m``       daily                daily buckets
+    ===========  ===================  ==================
+
+    ``today`` is passed through unbucketed because the provider's own cadence is
+    already finer than the index's snapshots, and re-bucketing would throw away
+    the market's only intraday detail to match a resolution it already beats.
+    """
+    now = now or datetime.now(timezone.utc)
+    rows = storage.market_bars(conn, symbol)
+    if not rows:
+        return None
+
+    # One reading per moment. When a fallback's daily bar and the primary's
+    # 5-minute bar describe the same instant, the finer one is the real reading
+    # and the coarse one was only ever standing in for it.
+    kept: Dict[str, Tuple[int, Any]] = {}
+    for row in rows:
+        rank = market.RESOLUTION_RANK.get(row["resolution"], 0)
+        current = kept.get(row["ts"])
+        if current is None or rank >= current[0]:
+            kept[row["ts"]] = (rank, row)
+    ordered = sorted((entry[1] for entry in kept.values()),
+                     key=lambda row: row["ts"])
+
+    bars: List[Tuple[datetime, float]] = []
+    for row in ordered:
+        moment = calculator.parse_ts(row["ts"])
+        if moment is not None:
+            bars.append((moment, float(row["value"])))
+    if not bars:
+        return None
+
+    # How far apart the provider's own bars are, which is what says whether the
+    # market was trading at a given moment. The published windows are bucketed
+    # wider than this, and each reports its own cadence separately.
+    newest = ordered[-1]
+    bar_minutes = market.RESOLUTION_MINUTES.get(newest["resolution"], 5)
+
+    def since(start: datetime) -> List[Tuple[datetime, float]]:
+        """Bars from ``start`` on, preceded by the last value known at ``start``.
+
+        The market is shut for most of a day, so a window can begin with no bar
+        of its own inside it - and a line that starts halfway across the chart
+        reads as missing data rather than as a market that had not opened yet.
+        The last bar from before the window is therefore carried in, stamped at
+        the window's start, which is what that value *was* at that moment: a
+        close is the market's level until the next session opens. It also puts
+        the previous close at the left edge of the "today" window, which is what
+        today's move is measured against.
+
+        Only when the window's start has no reading of its own nearby. If the
+        market was trading at that moment, its first bar inside the window is the
+        reading for it, and a carried copy of the previous bar would put a stale
+        value at the edge of the chart and then step to the real one seconds
+        later.
+        """
+        earlier = [pair for pair in bars if pair[0] < start]
+        inside = [pair for pair in bars if pair[0] >= start]
+        shut_at_start = (not inside or
+                         (inside[0][0] - start) > timedelta(minutes=bar_minutes))
+        if earlier and shut_at_start:
+            # Truncated, because every other stamp in the store is: the cutoff
+            # comes from the clock, which carries microseconds that no bar ever
+            # has, and a fixed-width stamp is what the rest of the pipeline
+            # compares and orders by.
+            inside = [(start.replace(microsecond=0), earlier[-1][1])] + inside
+        return inside
+
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def window(start: datetime, delta: Optional[timedelta],
+               cadence_minutes: int) -> Dict[str, Any]:
+        """One window: its readings, how far apart they should be, and its move.
+
+        ``cadence_minutes`` is what tells the page where the market was shut.
+        The market trades 09:30-15:00 CST (01:30-07:00 UTC) on working days -
+        5.5 hours out of 24 - so most of every chart is a period with no market
+        in it, and the line is carried across it because the last price still
+        stands. A segment wider than the cadence is therefore a shut market (or
+        a missed fetch), and is drawn as such rather than as a market that did
+        nothing.
+
+        ``change_pct`` is measured from the window's first published reading to
+        its last, which is the same convention the page uses for the index's own
+        window change - so the two numbers are like for like whatever window the
+        reader picked, even though the two clocks are not. Measuring from the
+        raw bars instead would disagree with the line whenever a bucket dropped
+        the first of them.
+        """
+        readings = since(start)
+        points = (market_points(readings) if delta is None
+                  else bucket_market(readings, delta))
+        first = points[0]["value"] if points else None
+        last = points[-1]["value"] if points else None
+        return {
+            "points": points,
+            "cadence_minutes": cadence_minutes,
+            "change_pct": (None if not first
+                           else round((last - first) / first * 100.0, 4)),
+        }
+
+    # Each window uses the finest resolution that covers it, and reports the
+    # cadence that resolution implies: the today window is the provider's own
+    # bars (5 minutes, or a day if the fallback answered), and the wider windows
+    # are bucketed to an hour and a day respectively.
+    windows = {
+        "today": window(midnight, None, bar_minutes),
+        "1w": window(now - timedelta(days=7.0), timedelta(hours=1), 60),
+        "1m": window(now - timedelta(days=30.0), timedelta(days=1), 24 * 60),
+    }
+
+    return {
+        "symbol": symbol,
+        "name": market.NAME,
+        "local_name": market.LOCAL_NAME,
+        "source": newest["source"],
+        "resolution": newest["resolution"],
+        # When the newest bar was taken, which is not when it was fetched: a
+        # reading is only as fresh as its own timestamp, and a page that shows a
+        # market number has to be able to say how old it is.
+        "as_of": newest["ts"],
+        "latest": {
+            "t": newest["ts"],
+            "value": round(float(newest["value"]), 4),
+            "change": (None if newest["change"] is None
+                       else round(float(newest["change"]), 4)),
+            "change_pct": (None if newest["change_pct"] is None
+                           else round(float(newest["change_pct"]), 4)),
+        },
+        "windows": windows,
+    }
 
 
 def attach_contributors(window: List[Dict[str, Any]],
@@ -475,6 +673,10 @@ def build_payload(conn: Any, cfg: config_mod.RpiConfig, schema_version: int,
         "windows": windows,
         "news_windows": news_windows,
         "news": build_news(analysis_rows, cfg, conn=conn, limit=news_limit),
+        # The market's own readings, for the page to draw beside the index.
+        # Absent (not empty) when nothing has been stored, so the page can tell
+        # "the market fetch has never worked" from "the market did not move".
+        "market": build_market(conn, now=now),
     }
 
 
